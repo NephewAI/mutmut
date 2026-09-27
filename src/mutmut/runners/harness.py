@@ -36,7 +36,7 @@ class TestRunner(ABC):
     def run_stats(self, *, tests: Iterable[str]) -> int:
         raise NotImplementedError()
 
-    def run_forced_fail(self) -> int:
+    def run_forced_fail(self, tests: Iterable[str] = ()) -> int:
         raise NotImplementedError()
 
     def prepare_main_test_run(self) -> None:
@@ -178,8 +178,8 @@ class PytestRunner(TestRunner):
             self.prepare_main_test_run()
             return int(self.execute_pytest(self._pytest_args_regular_run([]), plugins=list(plugins)))
 
-    def run_forced_fail(self) -> int:
-        return self.run_tests(mutant_name=None, tests=[])
+    def run_forced_fail(self, tests: Iterable[str] = ()) -> int:
+        return self.run_tests(mutant_name=None, tests=tests)
 
     def list_all_tests(self) -> ListAllTestsResult:
         class TestsCollector:
@@ -231,8 +231,10 @@ class HammettRunner(TestRunner):
             )
         )
 
-    def run_forced_fail(self) -> int:
+    def run_forced_fail(self, tests: Iterable[str] = ()) -> int:
         import hammett
+
+        unused(tests)
 
         return int(
             hammett.main(quiet=True, fail_fast=True, disable_assert_analyze=True, use_cache=False, insert_cwd=False)

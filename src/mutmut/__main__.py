@@ -50,6 +50,9 @@ from mutmut.code_coverage import get_excluded_lines_for_file
 from mutmut.configuration import Config
 from mutmut.configuration import config
 from mutmut.core import MutmutProgrammaticFailException
+from mutmut.diff_scope import DiffScope
+from mutmut.diff_scope import FileVerdict
+from mutmut.diff_scope import judge
 from mutmut.mutation.data import MutantLineSpans
 from mutmut.mutation.data import SourceFileMutationData
 from mutmut.mutation.diff_apply import apply_mutant
@@ -244,11 +247,11 @@ def write_all_mutants_to_file(*, out: TextIOBase, source: str, filename: Path) -
     return mutated_file
 
 
-def run_forced_fail_test(runner: MutantRunner) -> None:
+def run_forced_fail_test(runner: MutantRunner, tests: Iterable[str] = ()) -> None:
     set_mutant_under_test("fail")
     with CatchOutput(spinner_title="Running forced fail test") as catcher:
         try:
-            if runner.run_forced_fail() == 0:
+            if runner.run_forced_fail(tests) == 0:
                 catcher.dump_output()
                 print("FAILED: Unable to force test failures")
                 raise SystemExit(1)
@@ -959,14 +962,22 @@ elif "mutmut.__main__" not in sys.modules:
 
 @cli.command()
 @click.option("--max-children", type=int)
+@click.option(
+    "--diff-base",
+    help="Mutate only the lines changed since this git ref, and fail unless every mutant there is killed.",
+)
 @click.argument("mutant_names", required=False, nargs=-1)
-def run(mutant_names: tuple[str, ...] | list[str], *, max_children: int | None) -> None:
+def run(mutant_names: tuple[str, ...] | list[str], *, max_children: int | None, diff_base: str | None) -> None:
     assert isinstance(mutant_names, (tuple, list)), mutant_names
-    _run(mutant_names, max_children)
+    verdicts = _run(mutant_names, max_children, diff_base=diff_base)
+    if verdicts is not None and any(verdict.unresolved for verdict in verdicts):
+        sys.exit(1)
 
 
 # separate function, so we can call it directly from the tests
-def _run(mutant_names: tuple[str, ...] | list[str], max_children: int | None) -> None:
+def _run(
+    mutant_names: tuple[str, ...] | list[str], max_children: int | None, *, diff_base: str | None = None
+) -> list[FileVerdict] | None:
     # TODO: run no-ops once in a while to detect if we get false negatives
     # TODO: we should be able to get information on which tests killed mutants, which means we can get a list of tests and how many mutants each test kills. Those that kill zero mutants are redundant!
     set_mutant_under_test("mutant_generation")
@@ -974,13 +985,26 @@ def _run(mutant_names: tuple[str, ...] | list[str], max_children: int | None) ->
     if max_children is None:
         max_children = os.cpu_count() or 4
 
+    scope = None
+    if diff_base is not None:
+        scope = DiffScope.from_git(diff_base, (path for path in walk_source_files() if config().should_mutate(path)))
+        if not scope.has_possible_mutants():
+            print("No mutants possible on the lines changed since", diff_base)
+            return []
+        config().only_mutate = sorted(scope.changed_lines)
+
     start = datetime.now()
     makedirs(Path("mutants"), exist_ok=True)
     with CatchOutput(spinner_title="Generating mutants"):
+        if scope is not None:
+            scope.forget_previous_mutants()
         copy_src_dir()
         copy_also_copy_files()
         setup_source_paths()
         store_lines_covered_by_tests()
+        measured_lines = state()._covered_lines
+        if scope is not None:
+            state()._covered_lines = scope.line_filter(measured_lines)
         stats = create_mutants(max_children)
 
     time = datetime.now() - start
@@ -1006,21 +1030,24 @@ def _run(mutant_names: tuple[str, ...] | list[str], max_children: int | None) ->
 
     mutants, source_file_mutation_data_by_path = collect_source_file_mutation_data(mutant_names=mutant_names)
 
-    _check_test_to_mutant_associations(source_file_mutation_data_by_path)
+    # Coverage-derived keys come from file paths, and a diff may change only untested functions.
+    if scope is None and not config().stats_from_coverage:
+        _check_test_to_mutant_associations(source_file_mutation_data_by_path)
 
     set_mutant_under_test("")
-    with CatchOutput(spinner_title="Running clean tests") as output_catcher:
-        tests = tests_for_mutant_names(mutant_names)
+    # A diff run checks only the tests that cover its mutants; with none, there is nothing to check.
+    tests = tests_for_mutant_names([name for _, name, _ in mutants] if scope is not None else mutant_names)
+    if scope is None or tests:
+        with CatchOutput(spinner_title="Running clean tests") as output_catcher:
+            clean_test_exit_code = runner.run_clean_tests(tests=tests)
+            if clean_test_exit_code != 0:
+                output_catcher.dump_output()
+                print("Failed to run clean test")
+                exit(1)
+        print("    done")
 
-        clean_test_exit_code = runner.run_clean_tests(tests=tests)
-        if clean_test_exit_code != 0:
-            output_catcher.dump_output()
-            print("Failed to run clean test")
-            exit(1)
-    print("    done")
-
-    # this can't be the first thing, because it can fail deep inside pytest/django setup and then everything is destroyed
-    run_forced_fail_test(runner)
+        # this can't be the first thing, because it can fail deep inside pytest/django setup and then everything is destroyed
+        run_forced_fail_test(runner, tests if scope is not None else ())
 
     # Maps each submitted mutant to its mutation data, for result registration.
     mutation_data_by_mutant_name: dict[str, SourceFileMutationData] = {}
@@ -1108,6 +1135,16 @@ def _run(mutant_names: tuple[str, ...] | list[str], max_children: int | None) ->
             print(emoji_by_status.get(status_by_exit_code[exit_code], "?"), mutant_name)
 
         print()
+
+    if scope is None:
+        return None
+    verdicts = judge(scope, measured_lines)
+    print()
+    for verdict in verdicts:
+        print(verdict.describe())
+        for problem in verdict.unresolved:
+            print(f"    not killed: {problem}")
+    return verdicts
 
 
 def tests_for_mutant_names(mutant_names: tuple[str, ...] | list[str]) -> set[str]:

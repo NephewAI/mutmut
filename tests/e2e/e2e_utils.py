@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -72,3 +73,10 @@ def run_mutmut_in(project_path: Path) -> dict:
         _run([], None)
 
     return read_all_stats_for_project(project_path)
+
+
+def forget_modules_from(directory: Path) -> None:
+    """Coverage keys on file paths, so modules a copy imported earlier in this process must not be reused."""
+    for name, module in list(sys.modules.items()):
+        if str(getattr(module, "__file__", None) or "").startswith(str(directory)):
+            del sys.modules[name]

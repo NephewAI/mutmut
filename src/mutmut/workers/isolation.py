@@ -315,8 +315,8 @@ class MutantRunner(ABC):
         """Run the clean (unmutated) tests. Returns an exit code."""
 
     @abstractmethod
-    def run_forced_fail(self) -> int:
-        """Run the forced-fail test. Returns an exit code."""
+    def run_forced_fail(self, tests: Iterable[str] = ()) -> int:
+        """Run the forced-fail test, on all tests unless given some. Returns an exit code."""
 
     @abstractmethod
     def list_all_tests(self) -> ListAllTestsResult:
@@ -817,8 +817,13 @@ class ForkServerRunner(MutantRunner):
             lambda child_runner: child_runner.run_tests(mutant_name=None, tests=tests_list)
         )
 
-    def run_forced_fail(self) -> int:
-        return self._exit_code_from_child(lambda child_runner: child_runner.run_forced_fail())
+    def run_forced_fail(self, tests: Iterable[str] = ()) -> int:
+        tests_list = list(tests)
+        return self._exit_code_from_child(
+            lambda child_runner: (
+                child_runner.run_forced_fail(tests_list) if tests_list else child_runner.run_forced_fail()
+            )
+        )
 
     def list_all_tests(self) -> ListAllTestsResult:
         data = self._run_in_child(lambda child_runner: {"ids": list(child_runner.list_all_tests().ids)})
@@ -920,8 +925,9 @@ class ForkRunner(MutantRunner):
     def run_clean_tests(self, tests: Iterable[str]) -> int:
         return self.test_runner.run_tests(mutant_name=None, tests=tests)
 
-    def run_forced_fail(self) -> int:
-        return self.test_runner.run_forced_fail()
+    def run_forced_fail(self, tests: Iterable[str] = ()) -> int:
+        tests_list = list(tests)
+        return self.test_runner.run_forced_fail(tests_list) if tests_list else self.test_runner.run_forced_fail()
 
     def list_all_tests(self) -> ListAllTestsResult:
         return self.test_runner.list_all_tests()

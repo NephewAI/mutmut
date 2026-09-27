@@ -192,6 +192,23 @@ A function counts as called by a test when the test executes its first statement
 works with the pytest runner only.
 
 
+Mutate only what a diff changed
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To gate a pull request on the code it changes, give ``mutmut run`` a git ref:
+
+.. code-block::
+
+    mutmut run --diff-base origin/main
+
+Only the lines added or changed since that ref (committed, staged or not) are mutated,
+and with ``mutate_only_covered_lines`` only those the tests reach. Earlier results for
+the changed files are discarded, the clean and forced-fail checks use only the tests that
+cover the mutants, and when no changed line can be mutated at all, mutmut stops before
+running any tests. The command prints each changed file's result and exits with 1 unless
+every mutant there is killed or caught by the type checker.
+
+
 Filter generated mutants with type checker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
