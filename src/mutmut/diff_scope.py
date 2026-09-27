@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import re
 import subprocess
 from collections.abc import Iterable
@@ -41,6 +43,16 @@ class DiffScope:
             for path, lines in self.changed_lines.items()
         )
 
+    def shard(self, index: int, count: int) -> DiffScope:
+        """This shard's share of the changed functions; each is placed by its own hash, so other changes can't move it."""
+        kept: dict[str, set[int]] = {}
+        for path, lines in self.changed_lines.items():
+            for unit in split_by_function(Path(path).read_text(), lines):
+                digest = hashlib.sha256(f"{path}:{sorted(unit)}".encode()).digest()
+                if int.from_bytes(digest[:8], "big") % count == index:
+                    kept.setdefault(path, set()).update(unit)
+        return DiffScope(self.base, {path: frozenset(lines) for path, lines in kept.items()})
+
     def forget_previous_mutants(self) -> None:
         """Drop earlier mutants and verdicts of the changed files: they were scoped to other lines,
         and cached verdicts outlive changes to the tests that produced them."""
@@ -55,6 +67,27 @@ class DiffScope:
             key = str((Path("mutants") / path).absolute())
             lines[key] = set(changed) if covered is None else set(changed) & covered.get(key, set())
         return lines
+
+
+def split_by_function(source: str, lines: Iterable[int]) -> list[frozenset[int]]:
+    """Group lines by their innermost function; module-level lines stay together."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return [frozenset(lines)]
+    spans = sorted(
+        (
+            (node.lineno, node.end_lineno or node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ),
+        key=lambda span: span[1] - span[0],
+    )
+    grouped: dict[tuple[int, int], set[int]] = {}
+    for line in sorted(lines):
+        span = next((span for span in spans if span[0] <= line <= span[1]), (0, 0))
+        grouped.setdefault(span, set()).add(line)
+    return [frozenset(grouped[span]) for span in sorted(grouped)]
 
 
 def parse_changed_lines(diff: str) -> dict[str, frozenset[int]]:

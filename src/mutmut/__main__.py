@@ -966,17 +966,44 @@ elif "mutmut.__main__" not in sys.modules:
     "--diff-base",
     help="Mutate only the lines changed since this git ref, and fail unless every mutant there is killed.",
 )
+@click.option(
+    "--shard",
+    callback=lambda ctx, param, value: parse_shard(value),
+    help="INDEX/COUNT: with --diff-base, take only this shard of the changed functions.",
+)
 @click.argument("mutant_names", required=False, nargs=-1)
-def run(mutant_names: tuple[str, ...] | list[str], *, max_children: int | None, diff_base: str | None) -> None:
+def run(
+    mutant_names: tuple[str, ...] | list[str],
+    *,
+    max_children: int | None,
+    diff_base: str | None,
+    shard: tuple[int, int] | None,
+) -> None:
     assert isinstance(mutant_names, (tuple, list)), mutant_names
-    verdicts = _run(mutant_names, max_children, diff_base=diff_base)
+    if shard is not None and diff_base is None:
+        raise click.UsageError("--shard needs --diff-base")
+    verdicts = _run(mutant_names, max_children, diff_base=diff_base, shard=shard)
     if verdicts is not None and any(verdict.unresolved for verdict in verdicts):
         sys.exit(1)
 
 
+def parse_shard(value: str | None) -> tuple[int, int] | None:
+    """An INDEX/COUNT shard, with 0 <= INDEX < COUNT."""
+    if value is None:
+        return None
+    index, _, count = value.partition("/")
+    if not (index.isdigit() and count.isdigit() and int(index) < int(count)):
+        raise click.BadParameter("expected INDEX/COUNT with 0 <= INDEX < COUNT, e.g. 0/4")
+    return int(index), int(count)
+
+
 # separate function, so we can call it directly from the tests
 def _run(
-    mutant_names: tuple[str, ...] | list[str], max_children: int | None, *, diff_base: str | None = None
+    mutant_names: tuple[str, ...] | list[str],
+    max_children: int | None,
+    *,
+    diff_base: str | None = None,
+    shard: tuple[int, int] | None = None,
 ) -> list[FileVerdict] | None:
     # TODO: run no-ops once in a while to detect if we get false negatives
     # TODO: we should be able to get information on which tests killed mutants, which means we can get a list of tests and how many mutants each test kills. Those that kill zero mutants are redundant!
@@ -988,6 +1015,11 @@ def _run(
     scope = None
     if diff_base is not None:
         scope = DiffScope.from_git(diff_base, (path for path in walk_source_files() if config().should_mutate(path)))
+        if shard is not None:
+            scope = scope.shard(*shard)
+        if not scope.changed_lines:
+            print("No changed source lines to mutate", "in this shard" if shard else "")
+            return []
         if not scope.has_possible_mutants():
             print("No mutants possible on the lines changed since", diff_base)
             return []

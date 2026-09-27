@@ -1,9 +1,14 @@
 import subprocess
 from pathlib import Path
 
+import click
+import pytest
+
+from mutmut.__main__ import parse_shard
 from mutmut.diff_scope import DiffScope
 from mutmut.diff_scope import FileVerdict
 from mutmut.diff_scope import parse_changed_lines
+from mutmut.diff_scope import split_by_function
 
 DIFF = """\
 diff --git src/a.py src/a.py
@@ -115,3 +120,48 @@ def test_a_file_passes_only_when_every_mutant_is_killed_or_caught_by_the_type_ch
     assert verdict.unresolved == ["a.x_f__mutmut_3 (survived)", "a.x_f__mutmut_4 (no tests)"]
     assert verdict.describe() == "src/a.py: changed=3 covered=2 mutants=4 resolved=2"
     assert FileVerdict("src/a.py", 1, None, {"a.x_f__mutmut_1": None}).unresolved == ["a.x_f__mutmut_1 (not checked)"]
+
+
+SHARDED_SOURCE = "module = 1\n\ndef first():\n    one = 1\n    two = 2\n\ndef second():\n    return 3\n"
+
+
+def test_shards_partition_changed_lines_exactly_once_and_keep_functions_whole(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.py").write_text(SHARDED_SOURCE)
+    scope = DiffScope("main", {"a.py": frozenset({1, 4, 5, 8})})
+
+    shards = [scope.shard(index, 4) for index in range(4)]
+
+    lines = sorted(line for shard in shards for file in shard.changed_lines.values() for line in file)
+    assert lines == [1, 4, 5, 8]
+    assert any({4, 5} <= shard.changed_lines.get("a.py", frozenset()) for shard in shards)
+
+
+def test_a_function_stays_in_its_shard_when_another_file_joins_the_diff(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.py").write_text(SHARDED_SOURCE)
+    (tmp_path / "b.py").write_text("def other():\n    return 4\n")
+    alone = DiffScope("main", {"a.py": frozenset({8})})
+    joined = DiffScope("main", {"a.py": frozenset({8}), "b.py": frozenset({2})})
+
+    def home(scope: DiffScope) -> int:
+        return next(index for index in range(4) if "a.py" in scope.shard(index, 4).changed_lines)
+
+    assert home(alone) == home(joined)
+
+
+def test_split_by_function_groups_lines_by_innermost_function():
+    source = "x = 1\n\ndef outer():\n    def inner():\n        return 1\n    return inner\n"
+
+    assert split_by_function(source, [1, 4, 5, 6]) == [frozenset({1}), frozenset({6}), frozenset({4, 5})]
+
+
+@pytest.mark.parametrize(("value", "shard"), [(None, None), ("0/4", (0, 4)), ("3/4", (3, 4))])
+def test_a_shard_is_an_index_below_its_count(value, shard):
+    assert parse_shard(value) == shard
+
+
+@pytest.mark.parametrize("value", ["4/4", "x/4", "1", "-1/4"])
+def test_other_shard_forms_are_rejected(value):
+    with pytest.raises(click.BadParameter):
+        parse_shard(value)

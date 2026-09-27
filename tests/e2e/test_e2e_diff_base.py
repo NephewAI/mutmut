@@ -95,3 +95,29 @@ def test_the_run_command_exits_non_zero_when_a_changed_line_has_surviving_mutant
     assert result.exit_code == 1
     # mutmut writes to the real stdout, past the click runner's capture.
     assert "not killed: my_lib.x_badly_tested__mutmut_1 (survived)" in capfd.readouterr().out
+
+
+def test_shards_of_a_diff_run_split_its_mutants_without_overlap(tmp_path):
+    project = committed_copy(tmp_path, "stats_from_coverage = true\nmutate_only_covered_lines = true\n")
+    append(project / SOURCE, "\n\ndef doubled(x):\n    return x * 2\n\n\ndef tripled(x):\n    return x * 3\n")
+    append(project / TESTS, "\n\ndef test_multiples():\n    assert doubled(3) == 6\n    assert tripled(3) == 9\n")
+
+    def mutants(shard: tuple[int, int] | None) -> set[str]:
+        forget_modules_from(project)  # each CLI run is a fresh process
+        with change_cwd(project):
+            mutmut._reset_globals()
+            verdicts = _run([], None, diff_base="HEAD", shard=shard)
+        return {name for verdict in verdicts for name in verdict.exit_codes}
+
+    whole = mutants(None)
+    parts = [mutants((index, 4)) for index in range(4)]
+
+    assert whole and set().union(*parts) == whole
+    assert sum(len(part) for part in parts) == len(whole)
+
+
+def test_shard_needs_a_diff_base():
+    result = CliRunner().invoke(cli, ["run", "--shard", "0/4"])
+
+    assert result.exit_code == 2
+    assert "--shard needs --diff-base" in result.output

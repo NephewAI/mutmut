@@ -208,6 +208,10 @@ cover the mutants, and when no changed line can be mutated at all, mutmut stops 
 running any tests. The command prints each changed file's result and exits with 1 unless
 every mutant there is killed or caught by the type checker.
 
+To split that work across CI jobs, add ``--shard INDEX/COUNT`` (``--shard 0/4`` to
+``--shard 3/4``). Each changed function goes to one shard, picked by a hash of its file
+and changed lines, so a change elsewhere in the diff never moves it.
+
 
 Filter generated mutants with type checker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
