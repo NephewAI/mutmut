@@ -82,6 +82,7 @@ from mutmut.utils.file_utils import walk_source_files
 from mutmut.workers.isolation import MutantResult
 from mutmut.workers.isolation import MutantRunner
 from mutmut.workers.isolation import get_mutant_runner
+from mutmut.workers.session import run_in_reused_sessions
 
 # Document: surviving mutants are retested when you ask mutmut to retest them, interactively in the UI or via command line
 
@@ -1081,6 +1082,8 @@ def _run(
         # this can't be the first thing, because it can fail deep inside pytest/django setup and then everything is destroyed
         run_forced_fail_test(runner, tests if scope is not None else ())
 
+    session_verdicts = decide_in_reused_sessions(mutants, mutant_names, mutants_caught_by_type_checker)
+
     # Maps each submitted mutant to its mutation data, for result registration.
     mutation_data_by_mutant_name: dict[str, SourceFileMutationData] = {}
     count_tried = 0
@@ -1121,6 +1124,11 @@ def _run(
             if failed_type_check_mutant:
                 mutation_data.exit_code_by_key[mutant_name] = 37
                 mutation_data.type_check_error_by_key[mutant_name] = failed_type_check_mutant.error.error_description
+                mutation_data.save()
+                continue
+
+            if mutant_name in session_verdicts:
+                mutation_data.exit_code_by_key[mutant_name] = session_verdicts[mutant_name]
                 mutation_data.save()
                 continue
 
@@ -1176,6 +1184,26 @@ def _run(
         print(verdict.describe())
         for problem in verdict.unresolved:
             print(f"    not killed: {problem}")
+    return verdicts
+
+
+def decide_in_reused_sessions(
+    mutants: list[tuple[SourceFileMutationData, str, int | None]],
+    mutant_names: tuple[str, ...] | list[str],
+    caught_by_type_checker: dict[str, FailedTypeCheckMutant],
+) -> dict[str, int]:
+    """With `session_batch_size`, settle what reused pytest sessions can before the isolated runs."""
+    if config().session_batch_size <= 0:
+        return {}
+    pending = {}
+    for _, mutant_name, result in mutants:
+        name = mutant_name.replace("__init__.", "")
+        tests = state().tests_by_mangled_function_name.get(mangled_name_from_mutant_name(name), set())
+        if (mutant_names or result is None) and tests and name not in caught_by_type_checker:
+            pending[name] = sorted(tests, key=lambda test: (state().duration_by_test[test], test))
+    with CatchOutput(spinner_title="Running mutants in reused test sessions"):
+        verdicts = run_in_reused_sessions(pending, config().session_batch_size, config().session_batch_seconds)
+    print(f"    {len(verdicts)} of {len(pending)} mutants decided in reused test sessions")
     return verdicts
 
 

@@ -197,6 +197,8 @@ def _load_config() -> Config:
         debug=s("debug", False),
         mutate_only_covered_lines=s("mutate_only_covered_lines", False),
         stats_from_coverage=s("stats_from_coverage", False),
+        session_batch_size=s("session_batch_size", 0),
+        session_batch_seconds=s("session_batch_seconds", 120.0),
         source_paths=source_paths,
         resolved_mutated_source_paths=resolved_mutated_source_paths,
         pytest_add_cli_args=s("pytest_add_cli_args", []),
@@ -256,6 +258,9 @@ class Config:
     log_file_path: str
     # Derive the stats from the coverage run instead of running the tests again.
     stats_from_coverage: bool = False
+    # Mutants tested per reused pytest session before the isolated runs; 0 disables it.
+    session_batch_size: int = 0
+    session_batch_seconds: float = 120.0
 
     def config_fingerprint(self) -> dict[str, str]:
         """Hash the config fields that can change cached mutant *results*, grouped so the

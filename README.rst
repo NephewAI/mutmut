@@ -213,6 +213,25 @@ To split that work across CI jobs, add ``--shard INDEX/COUNT`` (``--shard 0/4`` 
 and changed lines, so a change elsewhere in the diff never moves it.
 
 
+Test many mutants in one pytest session
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each mutant normally gets a process of its own, which starts pytest and collects the
+tests again. With ``session_batch_size`` set, mutmut first tests that many mutants at a
+time in one collected session, switching the active mutant between them:
+
+.. code-block::
+
+    session_batch_size=32
+    session_batch_seconds=120
+
+A batch that crashes or outlives ``session_batch_seconds`` keeps the verdicts it reached,
+and the mutant it was on gets a process of its own. So does a mutant whose tests use a
+module- or session-scoped fixture defined in your project, since a mutant could leave
+that fixture's state behind for the next one, and a survivor any of whose tests could
+not run in the session. The default of ``0`` turns batching off.
+
+
 Filter generated mutants with type checker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
