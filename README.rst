@@ -175,6 +175,23 @@ settings, is not mutated either. Such code is not held to your test suite, so mu
 there could only ever show up as survivors.
 
 
+Derive the stats from the coverage run
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Before testing mutants, mutmut runs your tests once to learn which tests call which
+functions. If coverage.py already runs your suite for `mutate_only_covered_lines`, that
+second run can be skipped: with `stats_from_coverage` set to `true`, the coverage run
+records a context per test and mutmut reads the same test-per-function map from it.
+The default value is `false`.
+
+.. code-block::
+
+    stats_from_coverage=true
+
+A function counts as called by a test when the test executes its first statement. This
+works with the pytest runner only.
+
+
 Filter generated mutants with type checker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

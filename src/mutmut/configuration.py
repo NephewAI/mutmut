@@ -196,6 +196,7 @@ def _load_config() -> Config:
         max_stack_depth=s("max_stack_depth", -1),
         debug=s("debug", False),
         mutate_only_covered_lines=s("mutate_only_covered_lines", False),
+        stats_from_coverage=s("stats_from_coverage", False),
         source_paths=source_paths,
         resolved_mutated_source_paths=resolved_mutated_source_paths,
         pytest_add_cli_args=s("pytest_add_cli_args", []),
@@ -253,6 +254,8 @@ class Config:
     preload_modules_file: str | None
     log_to_file: bool
     log_file_path: str
+    # Derive the stats from the coverage run instead of running the tests again.
+    stats_from_coverage: bool = False
 
     def config_fingerprint(self) -> dict[str, str]:
         """Hash the config fields that can change cached mutant *results*, grouped so the

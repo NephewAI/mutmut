@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from collections import defaultdict
 from collections.abc import Iterable
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -44,7 +45,7 @@ class TestRunner(ABC):
     def run_tests(self, *, mutant_name: str | None, tests: Iterable[str]) -> int:
         raise NotImplementedError()
 
-    def collect_main_test_coverage(self, cov: Coverage) -> int:
+    def collect_main_test_coverage(self, cov: Coverage, plugins: Sequence[object] = ()) -> int:
         raise NotImplementedError()
 
     def list_all_tests(self) -> ListAllTestsResult:
@@ -172,10 +173,10 @@ class PytestRunner(TestRunner):
         with change_cwd("mutants"):
             return int(self.execute_pytest(self._pytest_args_regular_run(tests)))
 
-    def collect_main_test_coverage(self, cov: Coverage) -> int:
+    def collect_main_test_coverage(self, cov: Coverage, plugins: Sequence[object] = ()) -> int:
         with change_cwd("mutants"), cov.collect():
             self.prepare_main_test_run()
-            return int(self.execute_pytest(self._pytest_args_regular_run([])))
+            return int(self.execute_pytest(self._pytest_args_regular_run([]), plugins=list(plugins)))
 
     def run_forced_fail(self) -> int:
         return self.run_tests(mutant_name=None, tests=[])

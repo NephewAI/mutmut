@@ -23,6 +23,7 @@ import json
 import shutil
 import subprocess
 import warnings
+from collections import defaultdict
 from collections.abc import Callable
 from colorsys import hls_to_rgb
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from types import TracebackType
 import click
 import libcst as cst
 
+from mutmut.code_coverage import CoverageInfo
 from mutmut.code_coverage import gather_coverage
 from mutmut.code_coverage import get_covered_lines_for_file
 from mutmut.code_coverage import get_excluded_lines_for_file
@@ -146,10 +148,14 @@ def create_file_mutants(path: Path) -> FileMutationResult:
 
 
 def store_lines_covered_by_tests() -> None:
+    if not (config().mutate_only_covered_lines or config().stats_from_coverage):
+        return
+    coverage_info = gather_coverage(PytestRunner(), list(walk_source_files()))
     if config().mutate_only_covered_lines:
-        coverage_info = gather_coverage(PytestRunner(), list(walk_source_files()))
         state()._covered_lines = coverage_info.covered_lines
         state()._excluded_lines = coverage_info.excluded_lines
+    if config().stats_from_coverage:
+        state()._coverage_stats = coverage_info
 
 
 def create_mutants_for_file(filename: Path, output_path: Path) -> FileMutationResult:
@@ -356,6 +362,19 @@ def run_stats_collection(runner: MutantRunner, tests: Iterable[str] | None = Non
         print("failed to collect stats, no active tests found")
         exit(1)
 
+    save_stats()
+
+
+def use_coverage_stats(info: CoverageInfo) -> None:
+    """Take the stats from the coverage run instead of running the tests a second time."""
+    if info.test_exit_code != 0:
+        print(f"failed to collect stats. runner returned {info.test_exit_code}")
+        exit(1)
+    state().tests_by_mangled_function_name = defaultdict(set, info.tests_by_mangled_function_name)
+    state().duration_by_test = defaultdict(float, info.duration_by_test)
+    if not collected_test_names():
+        print("failed to collect stats, no active tests found")
+        exit(1)
     save_stats()
 
 
@@ -668,7 +687,12 @@ def collect_or_load_stats(
     if did_load and apply_config_invalidation:
         force_full = _apply_config_change_invalidation(mutants_caught_by_type_checker or {})
 
-    if not did_load or force_full:
+    coverage_stats = state()._coverage_stats
+    if config().stats_from_coverage and coverage_stats is not None:
+        if not did_load or force_full:
+            _refresh_change_detection_baseline()
+        use_coverage_stats(coverage_stats)
+    elif not did_load or force_full:
         # A full run rebuilds the cache, so reset the change-detection baseline to "now".
         _refresh_change_detection_baseline()
         # Run full stats

@@ -56,9 +56,12 @@ E2E_PROJECTS = REPO_ROOT / "e2e_projects"
 
 def run_mutmut_on_project(project: str) -> dict:
     """Runs mutmut on this project and verifies that the results stay the same for all mutations."""
-    mutmut._reset_globals()
+    return run_mutmut_in(E2E_PROJECTS / project)
 
-    project_path = E2E_PROJECTS / project
+
+def run_mutmut_in(project_path: Path) -> dict:
+    """Runs mutmut from scratch in a project directory and returns every mutant's result."""
+    mutmut._reset_globals()
 
     mutants_path = project_path / "mutants"
     shutil.rmtree(mutants_path, ignore_errors=True)

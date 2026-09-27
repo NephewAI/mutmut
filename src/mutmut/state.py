@@ -1,6 +1,12 @@
+from __future__ import annotations
+
 from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mutmut.code_coverage import CoverageInfo
 
 
 @dataclass
@@ -26,6 +32,8 @@ class MutmutState:
     _stats: set[str] = field(default_factory=set)
     _covered_lines: dict[str, set[int]] | None = None
     _excluded_lines: dict[str, set[int]] | None = None
+    # The coverage run's per-test data, when `stats_from_coverage` replaces the stats run.
+    _coverage_stats: CoverageInfo | None = None
 
 
 _state: MutmutState | None = None
