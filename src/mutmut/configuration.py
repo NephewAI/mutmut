@@ -10,6 +10,7 @@ from configparser import ConfigParser
 from configparser import NoOptionError
 from configparser import NoSectionError
 from dataclasses import dataclass
+from dataclasses import field
 from enum import Enum
 from os.path import isdir
 from os.path import isfile
@@ -58,6 +59,21 @@ class ForkServerWarmup(str, Enum):
     COLLECT = "collect"
     IMPORT = "import"
     NONE = "none"
+
+
+# Test configuration and dependencies: no test's recorded files show their effect.
+COVERAGE_MAP_RERUN_ALL = (
+    "*conftest.py",
+    "*pyproject.toml",
+    "*.lock",
+    "*requirements*.txt",
+    "*Pipfile",
+    "*.python-version",
+    "*setup.cfg",
+    "*setup.py",
+    "*pytest.ini",
+    "*tox.ini",
+)
 
 
 def _workspace_defaults(project: Path) -> dict[str, Any]:
@@ -204,6 +220,8 @@ def _load_config() -> Config:
         stats_from_coverage=s("stats_from_coverage", False),
         session_batch_size=s("session_batch_size", 0),
         session_batch_seconds=s("session_batch_seconds", 120.0),
+        coverage_map=s("coverage_map", False),
+        coverage_map_rerun_all=s("coverage_map_rerun_all", list(COVERAGE_MAP_RERUN_ALL)),
         source_paths=source_paths,
         resolved_mutated_source_paths=resolved_mutated_source_paths,
         pytest_add_cli_args=s("pytest_add_cli_args", []),
@@ -266,6 +284,10 @@ class Config:
     # Mutants tested per reused pytest session before the isolated runs; 0 disables it.
     session_batch_size: int = 0
     session_batch_seconds: float = 120.0
+    # Keep the files each test runs, and run only the tests a diff can reach.
+    coverage_map: bool = False
+    # Repository paths whose change makes a diff run run every test anyway.
+    coverage_map_rerun_all: list[str] = field(default_factory=lambda: list(COVERAGE_MAP_RERUN_ALL))
 
     def config_fingerprint(self) -> dict[str, str]:
         """Hash the config fields that can change cached mutant *results*, grouped so the

@@ -249,6 +249,32 @@ that fixture's state behind for the next one, and a survivor any of whose tests 
 not run in the session. The default of ``0`` turns batching off.
 
 
+Run only the tests a diff can reach
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A diff run measures coverage by running every test, though most never touch the
+changed files. With ``coverage_map = true``, mutmut records the files each test runs,
+and the files each test module's import runs, in ``mutants/mutmut-coverage-map.json``.
+A later ``--diff-base`` run reruns only the tests that ran a file changed since the
+map's commit, plus any test the map doesn't know. Test modules with no selected test
+are not imported.
+
+Build the map on your main branch, and restore it before diff runs, for example from
+a CI cache:
+
+.. code-block::
+
+    mutmut coverage-map --workspace
+
+A test can only be skipped if it ran none of the changed files. It can still be
+affected by them through state it never recorded, such as a cache or a database.
+Changes to files matching ``coverage_map_rerun_all`` run every test. The default is
+conftest files, lock files and other test configuration. A ``pyproject.toml`` counts
+only if a table that can change the tests changed, and adding a test to
+``pytest_add_cli_args_test_selection`` doesn't count. Every run adds what its tests
+ran to the map.
+
+
 Filter generated mutants with type checker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

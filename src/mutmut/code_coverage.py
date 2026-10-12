@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import ast
 import io
+import os
+import sys
+from collections import defaultdict
 from collections.abc import Iterable
 from collections.abc import Sequence
 from contextlib import redirect_stderr
@@ -16,16 +19,26 @@ from coverage import CoverageData
 from coverage.exceptions import CoverageException
 
 from mutmut.configuration import config
+from mutmut.coverage_map import COLLECT_CONTEXT
+from mutmut.coverage_map import ProjectPaths
+from mutmut.coverage_map import Selection
+from mutmut.coverage_map import files_by_context
+from mutmut.coverage_map import opened_files
 from mutmut.utils.format_utils import get_mutant_name
 from mutmut.utils.format_utils import make_mutant_key
 from mutmut.utils.format_utils import strip_prefix
 
 if TYPE_CHECKING:
     from _pytest.nodes import Item
+    from _pytest.nodes import Node
+    from _pytest.reports import CollectReport
     from _pytest.runner import CallInfo
 
     from mutmut.runners.harness import TestRunner
 
+
+# pytest's exit code when a selection leaves no test to run.
+NO_TESTS_COLLECTED = 5
 
 # Enough of a failed test run's report to show which tests failed and why.
 TEST_OUTPUT_LIMIT = 100_000
@@ -48,6 +61,10 @@ class CoverageInfo:
     # Filled only with `stats_from_coverage`: what a separate stats run would record.
     tests_by_mangled_function_name: dict[str, set[str]] = field(default_factory=dict)
     duration_by_test: dict[str, float] = field(default_factory=dict)
+    # Filled only with a coverage map: the repository files each test and test module import ran.
+    files_by_context: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Whether a coverage map chose the tests, so running none of them is expected.
+    selected: bool = False
     test_exit_code: int = 0
     test_output: str = ""
 
@@ -78,32 +95,50 @@ def get_excluded_lines_for_file(filename: str, excluded_lines: dict[str, set[int
     return set(excluded_lines.get(abs_filename, ()))
 
 
-def gather_coverage(runner: TestRunner, source_files: Iterable[Path]) -> CoverageInfo:
+def gather_coverage(
+    runner: TestRunner,
+    source_files: Iterable[Path],
+    paths: ProjectPaths | None = None,
+    selection: Selection | None = None,
+) -> CoverageInfo:
     """Gathers coverage for the given source files in a throwaway child process.
 
     Returns the covered and excluded lines of each of them. Forking keeps the test
     suite's imports out of the main process, which imports the same modules again
-    later and cannot always survive it (#528).
+    later and cannot always survive it (#528). With ``paths``, also records the files
+    each test ran; with ``selection``, runs only the selected tests.
     """
     # TODO: (#397) mutmut.workers.isolation imports POSIX-only modules
     from mutmut.workers.isolation import run_in_fork_with_result
 
-    result: CoverageInfo = run_in_fork_with_result(_gather_coverage_in_this_process, runner, source_files)
+    result: CoverageInfo = run_in_fork_with_result(
+        _gather_coverage_in_this_process, runner, source_files, paths, selection
+    )
     return result
 
 
-def _gather_coverage_in_this_process(runner: TestRunner, source_files: Iterable[Path]) -> CoverageInfo:
+def _gather_coverage_in_this_process(
+    runner: TestRunner,
+    source_files: Iterable[Path],
+    paths: ProjectPaths | None = None,
+    selection: Selection | None = None,
+) -> CoverageInfo:
     """The actual measurement. Pollutes the calling process; see gather_coverage."""
     mutants_path = Path("mutants")
 
     # Run the tests and gather coverage
     cov = coverage.Coverage(data_file=None)
-    contexts = PerTestContexts(cov) if config().stats_from_coverage else None
+    contexts = PerTestContexts(cov) if config().stats_from_coverage or paths else None
+    if contexts and paths:
+        contexts.record_opened_files()
     if contexts:
         # The child's output dies with it, so keep pytest's report in case the tests fail.
         output = io.StringIO()
+        plugins = [contexts, *([selection] if selection else [])]
         with redirect_stdout(output), redirect_stderr(output):
-            exit_code = runner.collect_main_test_coverage(cov, plugins=[contexts])
+            exit_code = runner.collect_main_test_coverage(cov, plugins=plugins)
+        if selection and exit_code == NO_TESTS_COLLECTED:
+            exit_code = 0
     else:
         exit_code = runner.collect_main_test_coverage(cov)
 
@@ -120,6 +155,12 @@ def _gather_coverage_in_this_process(runner: TestRunner, source_files: Iterable[
         if contexts:
             info.tests_by_mangled_function_name |= _tests_by_function(coverage_data, filename, abs_filename)
 
+    if paths and contexts:
+        ran, opened = files_by_context(coverage_data, paths), opened_files(contexts.opened, paths)
+        info.files_by_context = {
+            c: ran.get(c, frozenset()) | opened.get(c, frozenset()) for c in ran.keys() | opened.keys()
+        }
+    info.selected = selection is not None
     if contexts:
         info.duration_by_test = contexts.duration_by_test
         info.test_exit_code = exit_code
@@ -134,11 +175,33 @@ class PerTestContexts:
     def __init__(self, cov: coverage.Coverage) -> None:
         self.cov = cov
         self.duration_by_test: dict[str, float] = {}
+        self.context = ""
+        self.opened: dict[str, set[str]] = defaultdict(set)
+
+    def switch(self, context: str) -> None:
+        self.context = context
+        self.cov.switch_context(context)
+
+    def record_opened_files(self) -> None:
+        """Note every file opened under each context; audit hooks last as long as this throwaway process."""
+
+        def hook(event: str, args: tuple[object, ...]) -> None:
+            if event == "open" and isinstance(args[0], (str, os.PathLike)):
+                self.opened[self.context].add(os.path.abspath(os.fspath(args[0])))
+
+        sys.addaudithook(hook)
+
+    def pytest_collectstart(self, collector: Node) -> None:
+        if type(collector).__name__ == "Module":
+            self.switch(COLLECT_CONTEXT + strip_prefix(collector.nodeid, prefix="mutants/"))
+
+    def pytest_collectreport(self, report: CollectReport) -> None:
+        self.switch("")
 
     def pytest_runtest_logstart(self, nodeid: str) -> None:
         test = strip_prefix(nodeid, prefix="mutants/")
         self.duration_by_test[test] = 0.0
-        self.cov.switch_context(test)
+        self.switch(test)
 
     def pytest_runtest_makereport(self, item: Item, call: CallInfo[None]) -> None:
         if call.when == "call":
@@ -156,7 +219,7 @@ def _tests_by_function(data: CoverageData, filename: Path, abs_filename: str) ->
         return {}
     tests_by_function = {}
     for name, line in entries.items():
-        if tests := {context for context in by_line.get(line, ()) if context}:
+        if tests := {c for c in by_line.get(line, ()) if c and not c.startswith(COLLECT_CONTEXT)}:
             tests_by_function[name] = tests
     return tests_by_function
 

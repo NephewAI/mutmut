@@ -50,6 +50,9 @@ from mutmut.code_coverage import get_excluded_lines_for_file
 from mutmut.configuration import Config
 from mutmut.configuration import config
 from mutmut.core import MutmutProgrammaticFailException
+from mutmut.coverage_map import CoverageMap
+from mutmut.coverage_map import ProjectPaths
+from mutmut.coverage_map import Selection
 from mutmut.diff_scope import DiffScope
 from mutmut.diff_scope import FileVerdict
 from mutmut.diff_scope import judge
@@ -86,6 +89,7 @@ from mutmut.workers.session import run_in_reused_sessions
 from mutmut.workspace import changed_members
 from mutmut.workspace import report
 from mutmut.workspace import run_members
+from mutmut.workspace import workspace_members
 
 # Document: surviving mutants are retested when you ask mutmut to retest them, interactively in the UI or via command line
 
@@ -154,15 +158,44 @@ def create_file_mutants(path: Path) -> FileMutationResult:
         return FileMutationResult(error=e)
 
 
-def store_lines_covered_by_tests() -> None:
-    if not (config().mutate_only_covered_lines or config().stats_from_coverage):
-        return
-    coverage_info = gather_coverage(PytestRunner(), list(walk_source_files()))
+def store_lines_covered_by_tests(diff_base: str | None = None) -> str | None:
+    """Measure coverage; returns what the coverage map decided, for a diff run that has one."""
+    if not (config().mutate_only_covered_lines or config().stats_from_coverage or config().coverage_map):
+        return None
+    paths = ProjectPaths.here() if config().coverage_map else None
+    previous = CoverageMap.load() if paths else None
+    selection, note = choose_tests(paths, previous, diff_base) if diff_base and paths and previous else (None, None)
+    coverage_info = gather_coverage(PytestRunner(), list(walk_source_files()), paths, selection)
+    if paths and coverage_info.test_exit_code == 0:
+        save_coverage_map(paths, previous, coverage_info)
     if config().mutate_only_covered_lines:
         state()._covered_lines = coverage_info.covered_lines
         state()._excluded_lines = coverage_info.excluded_lines
     if config().stats_from_coverage:
         state()._coverage_stats = coverage_info
+    return note
+
+
+def choose_tests(paths: ProjectPaths, previous: CoverageMap, diff_base: str) -> tuple[Selection | None, str]:
+    """The tests that can reach the files changed since the map was made or since ``diff_base``, or None to run them all."""
+    since_map, since_base = paths.changed_since(previous.commit), paths.changed_since(diff_base)
+    if since_map is None or since_base is None:
+        return None, f"coverage map: commit {previous.commit[:12]} is unknown here, running every test"
+    changed = since_map | since_base
+    choice = previous.select(changed, config().coverage_map_rerun_all)
+    if isinstance(choice, str):
+        return None, f"coverage map: {choice}, running every test"
+    known = len(choice.known_tests)
+    return choice, f"coverage map: running {len(choice.tests)} of {known} known tests, for {len(changed)} changed files"
+
+
+def save_coverage_map(paths: ProjectPaths, previous: CoverageMap | None, info: CoverageInfo) -> None:
+    """Record the files each test ran, keeping earlier runs' too; skipped when no commit describes them."""
+    commit = paths.head() or (previous.commit if previous else None)
+    if commit is None:
+        return
+    recorded = CoverageMap.from_contexts(commit, info.files_by_context)
+    (previous.merged(recorded) if previous else recorded).save()
 
 
 def create_mutants_for_file(filename: Path, output_path: Path) -> FileMutationResult:
@@ -389,7 +422,7 @@ def use_coverage_stats(info: CoverageInfo) -> None:
         exit(1)
     state().tests_by_mangled_function_name = defaultdict(set, info.tests_by_mangled_function_name)
     state().duration_by_test = defaultdict(float, info.duration_by_test)
-    if not collected_test_names():
+    if not collected_test_names() and not info.selected:
         print("failed to collect stats, no active tests found")
         exit(1)
     save_stats()
@@ -1021,6 +1054,31 @@ def run_workspace(root: Path, diff_base: str, shard: tuple[int, int] | None, cpu
     return report(run_members(root, members, arguments, cpu_count))
 
 
+@cli.command(name="coverage-map")
+@click.option("--max-children", type=int)
+@click.option("--workspace", is_flag=True, help="From a uv workspace root, map every member, side by side.")
+def coverage_map(*, max_children: int | None, workspace: bool) -> None:
+    """Run every test and record the files each one runs, for later diff runs to choose tests from."""
+    if workspace:
+        root = Path.cwd()
+        cpu_count = max_children or os.cpu_count() or 4
+        sys.exit(report(run_members(root, workspace_members(root), [], cpu_count, command="coverage-map")))
+    paths = ProjectPaths.here()
+    if paths is None or not config().coverage_map:
+        raise click.UsageError("coverage-map needs a git checkout and `coverage_map = true`")
+    makedirs(Path("mutants"), exist_ok=True)
+    copy_src_dir()
+    copy_also_copy_files()
+    setup_source_paths()
+    info = gather_coverage(PytestRunner(), [], paths)
+    if info.test_exit_code != 0:
+        print(info.test_output)
+        print(f"the tests fail (pytest exited {info.test_exit_code}), so there is no coverage map")
+        sys.exit(1)
+    save_coverage_map(paths, CoverageMap.load(), info)
+    print(f"coverage map: {len(info.duration_by_test)} tests")
+
+
 def parse_shard(value: str | None) -> tuple[int, int] | None:
     """An INDEX/COUNT shard, with 0 <= INDEX < COUNT."""
     if value is None:
@@ -1067,7 +1125,7 @@ def _run(
         copy_src_dir()
         copy_also_copy_files()
         setup_source_paths()
-        store_lines_covered_by_tests()
+        coverage_note = store_lines_covered_by_tests(diff_base=scope.base if scope else None)
         stop_if_the_tests_fail(catcher)
         measured_lines = state()._covered_lines
         if scope is not None:
@@ -1075,6 +1133,8 @@ def _run(
         stats = create_mutants(max_children)
 
     time = datetime.now() - start
+    if coverage_note:
+        print(f"    {coverage_note}")
     print(
         f"    done in {round(time.total_seconds() * 1000)}ms ({stats.mutated} files mutated, {stats.ignored} ignored, {stats.unmodified} unmodified)",
     )

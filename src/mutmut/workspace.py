@@ -14,12 +14,16 @@ from typing import Any
 
 
 def load_toml(path: Path) -> dict[str, Any]:
+    return parse_toml(path.read_text("utf-8"))
+
+
+def parse_toml(text: str) -> dict[str, Any]:
     if sys.version_info >= (3, 11):
         from tomllib import loads
     else:
         # noinspection PyPackageRequirements
         from toml import loads
-    return loads(path.read_text("utf-8"))
+    return loads(text)
 
 
 @dataclass(frozen=True)
@@ -47,8 +51,10 @@ def changed_members(root: Path, base: str) -> list[Path]:
     return [member for member in workspace_members(root) if any(path.is_relative_to(member) for path in changed)]
 
 
-def run_members(root: Path, members: Sequence[Path], arguments: Sequence[str], cpu_count: int) -> list[MemberRun]:
-    """``mutmut run`` in each member, side by side, each with its own temp dir and share of the CPUs."""
+def run_members(
+    root: Path, members: Sequence[Path], arguments: Sequence[str], cpu_count: int, command: str = "run"
+) -> list[MemberRun]:
+    """``mutmut <command> <arguments>`` in each member, side by side, each with its own temp dir and share of the CPUs."""
     if not members:
         return []
     parallelism = min(cpu_count, len(members))
@@ -58,9 +64,9 @@ def run_members(root: Path, members: Sequence[Path], arguments: Sequence[str], c
         with tempfile.TemporaryDirectory(prefix="mutmut-") as scratch:
             # Concurrent pytest runs prune each other's numbered temp dirs unless they have separate roots.
             environment = {**os.environ, "TMPDIR": scratch}
-            command = [sys.executable, "-m", "mutmut", "run", "--max-children", str(children), *arguments]
+            mutmut = [sys.executable, "-m", "mutmut", command, "--max-children", str(children), *arguments]
             result = subprocess.run(
-                command, cwd=root / member, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                mutmut, cwd=root / member, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
             )
         return MemberRun(member, result.returncode, result.stdout)
 
