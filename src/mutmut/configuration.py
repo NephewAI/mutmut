@@ -219,7 +219,6 @@ def _load_config() -> Config:
         mutate_only_covered_lines=s("mutate_only_covered_lines", False),
         stats_from_coverage=s("stats_from_coverage", False),
         session_batch_size=s("session_batch_size", 0),
-        session_batch_seconds=s("session_batch_seconds", 120.0),
         coverage_map=s("coverage_map", False),
         coverage_map_rerun_all=s("coverage_map_rerun_all", list(COVERAGE_MAP_RERUN_ALL)),
         source_paths=source_paths,
@@ -283,7 +282,6 @@ class Config:
     stats_from_coverage: bool = False
     # Mutants tested per reused pytest session before the isolated runs; 0 disables it.
     session_batch_size: int = 0
-    session_batch_seconds: float = 120.0
     # Keep the files each test runs, and run only the tests a diff can reach.
     coverage_map: bool = False
     # Repository paths whose change makes a diff run run every test anyway.

@@ -242,13 +242,16 @@ time in one collected session, switching the active mutant between them:
 .. code-block::
 
     session_batch_size=32
-    session_batch_seconds=120
 
-A batch that crashes or outlives ``session_batch_seconds`` keeps the verdicts it reached,
-and the mutant it was on gets a process of its own. So does a mutant whose tests use a
-module- or session-scoped fixture defined in your project, since a mutant could leave
-that fixture's state behind for the next one, and a survivor any of whose tests could
-not run in the session. The default of ``0`` turns batching off.
+Up to ``--max-children`` sessions run side by side, each taking the next batch. A mutant
+in a session gets the same time limit as in a process of its own. If it runs past that, or
+crashes the session, the session stops: it keeps the verdicts it reached, the mutant gets a
+process of its own, and the mutants it hadn't reached go to the next session.
+
+A mutant also gets a process of its own if its tests use a module- or session-scoped
+fixture defined in your project, since a mutant could leave that fixture's state behind
+for the next one. So does a survivor any of whose tests could not run in the session.
+The default of ``0`` turns batching off.
 
 
 Run only the tests a diff can reach

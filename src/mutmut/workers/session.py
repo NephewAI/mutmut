@@ -6,6 +6,8 @@ import inspect
 import io
 import os
 import select
+import shutil
+import tempfile
 import time
 import traceback
 from collections.abc import Callable
@@ -16,6 +18,7 @@ from contextlib import redirect_stderr
 from contextlib import redirect_stdout
 from contextlib import suppress
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -109,63 +112,92 @@ def run_batch(pending: Mapping[str, Sequence[str]], batch_size: int, report: Cal
 
 
 def run_in_reused_sessions(
-    pending: Mapping[str, Sequence[str]], batch_size: int, batch_seconds: float
+    pending: Mapping[str, Sequence[str]], batch_size: int, workers: int, seconds_for: Mapping[str, float]
 ) -> dict[str, int]:
-    """Verdicts for the mutants reused sessions could decide; the rest need an isolated run each."""
+    """Verdicts for the mutants reused sessions could decide; the rest need an isolated run each.
+
+    Up to ``workers`` sessions run side by side, each taking the next ``batch_size`` mutants.
+    A session is stopped only when its current mutant outlives ``seconds_for`` that mutant.
+    """
     decided: dict[str, int] = {}
-    attempted: set[str] = set()
-    while todo := {name: tests for name, tests in pending.items() if name not in attempted}:
-        progress = _run_batch_in_child(todo, batch_size, batch_seconds)
-        if not progress:
-            break
-        for name, verdict in progress:
-            attempted.add(name)
-            if verdict is not None:
-                decided[name] = verdict
+    queue = list(pending)
+    running: list[Batch] = []
+    while queue or running:
+        while queue and len(running) < workers:
+            names, queue = queue[:batch_size], queue[batch_size:]
+            running.append(Batch.start({name: pending[name] for name in names}, batch_size))
+        timeout = max(0.0, min(batch.deadline for batch in running) - time.monotonic())
+        ready, _, _ = select.select([batch.reader for batch in running], [], [], timeout)
+        for batch in list(running):
+            still_open = batch.read(seconds_for) if batch.reader in ready else True
+            if still_open and time.monotonic() < batch.deadline:
+                continue
+            running.remove(batch)
+            queue = batch.finish(decided, overran=still_open) + queue
+    set_mutant_under_test("")
     return decided
 
 
-def _run_batch_in_child(
-    pending: Mapping[str, Sequence[str]], batch_size: int, batch_seconds: float
-) -> list[tuple[str, int | None]]:
-    """Fork a batch and read its progress until it finishes, crashes or runs out of time."""
-    read_fd, write_fd = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        os.close(read_fd)
-        writer = os.fdopen(write_fd, "w", buffering=1)
-        try:
-            run_batch(pending, batch_size, lambda line: print(line, file=writer, flush=True))
-        except BaseException:
-            traceback.print_exc()
-        finally:
-            os._exit(0)
-    os.close(write_fd)
-    progress: dict[str, int | None] = {}
-    deadline = time.monotonic() + batch_seconds
-    buffer = b""
-    with os.fdopen(read_fd, "rb") as reader:
-        while (remaining := deadline - time.monotonic()) > 0:
-            ready, _, _ = select.select([reader], [], [], remaining)
-            if not ready:
-                continue
-            chunk = os.read(reader.fileno(), 65536)
-            if not chunk:
-                break
-            buffer += chunk
-            *lines, buffer = buffer.split(b"\n")
-            for line in lines:
-                _record(line.decode(), progress)
-        else:
-            os.kill(pid, 9)
-    os.waitpid(pid, 0)
-    set_mutant_under_test("")
-    return list(progress.items())
+# Seconds a session may take to collect its tests, or to move on to its next mutant.
+STARTUP_SECONDS = 600.0
 
 
-def _record(line: str, progress: dict[str, int | None]) -> None:
-    match line.split(" "):
-        case ["start", name]:
-            progress[name] = None
-        case ["done", name, verdict]:
-            progress[name] = int(verdict) if verdict else None
+@dataclass
+class Batch:
+    """A forked session working through its share of the mutants, as the parent sees it."""
+
+    pid: int
+    reader: int
+    names: list[str]
+    temp_root: str
+    deadline: float
+    current: str | None = None
+    buffer: bytes = b""
+    progress: dict[str, int | None] = field(default_factory=dict)
+
+    @classmethod
+    def start(cls, pending: Mapping[str, Sequence[str]], batch_size: int) -> Batch:
+        temp_root = tempfile.mkdtemp(prefix="mutmut-session-")
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(read_fd)
+            # Sessions side by side must not prune each other's pytest temp directories.
+            os.environ["PYTEST_DEBUG_TEMPROOT"] = temp_root
+            writer = os.fdopen(write_fd, "w", buffering=1)
+            try:
+                run_batch(pending, batch_size, lambda line: print(line, file=writer, flush=True))
+            except BaseException:
+                traceback.print_exc()
+            finally:
+                os._exit(0)
+        os.close(write_fd)
+        return cls(pid, read_fd, list(pending), temp_root, time.monotonic() + STARTUP_SECONDS)
+
+    def read(self, seconds_for: Mapping[str, float]) -> bool:
+        """Take in the session's progress; False once it has exited."""
+        chunk = os.read(self.reader, 65536)
+        if not chunk:
+            return False
+        *lines, self.buffer = (self.buffer + chunk).split(b"\n")
+        for line in lines:
+            match line.decode().split(" "):
+                case ["start", name]:
+                    self.current, self.progress[name] = name, None
+                    self.deadline = time.monotonic() + seconds_for[name]
+                case ["done", name, verdict]:
+                    self.current, self.progress[name] = None, int(verdict) if verdict else None
+                    self.deadline = time.monotonic() + STARTUP_SECONDS
+        return True
+
+    def finish(self, decided: dict[str, int], *, overran: bool) -> list[str]:
+        """Keep its verdicts; returns the mutants to retry, which never started because it stopped early."""
+        if overran:
+            os.kill(self.pid, 9)
+        os.waitpid(self.pid, 0)
+        os.close(self.reader)
+        shutil.rmtree(self.temp_root, ignore_errors=True)
+        decided.update({name: verdict for name, verdict in self.progress.items() if verdict is not None})
+        # A mutant it was on when it crashed or overran gets an isolated run; ones it never reached go back in the queue.
+        stopped_early = self.current is not None
+        return [name for name in self.names if name not in self.progress] if stopped_early else []

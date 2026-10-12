@@ -1177,7 +1177,7 @@ def _run(
         # this can't be the first thing, because it can fail deep inside pytest/django setup and then everything is destroyed
         run_forced_fail_test(runner, tests if scope is not None else ())
 
-    session_verdicts = decide_in_reused_sessions(mutants, mutant_names, mutants_caught_by_type_checker)
+    session_verdicts = decide_in_reused_sessions(mutants, mutant_names, mutants_caught_by_type_checker, max_children)
 
     # Maps each submitted mutant to its mutation data, for result registration.
     mutation_data_by_mutant_name: dict[str, SourceFileMutationData] = {}
@@ -1351,6 +1351,7 @@ def decide_in_reused_sessions(
     mutants: list[tuple[SourceFileMutationData, str, int | None]],
     mutant_names: tuple[str, ...] | list[str],
     caught_by_type_checker: dict[str, FailedTypeCheckMutant],
+    max_children: int,
 ) -> dict[str, int]:
     """With `session_batch_size`, settle what reused pytest sessions can before the isolated runs."""
     if config().session_batch_size <= 0:
@@ -1361,9 +1362,17 @@ def decide_in_reused_sessions(
         tests = state().tests_by_mangled_function_name.get(mangled_name_from_mutant_name(name), set())
         if (mutant_names or result is None) and tests and name not in caught_by_type_checker:
             pending[name] = sorted(tests, key=lambda test: (state().duration_by_test[test], test))
+    start = datetime.now()
     with CatchOutput(spinner_title="Running mutants in reused test sessions"):
-        verdicts = run_in_reused_sessions(pending, config().session_batch_size, config().session_batch_seconds)
-    print(f"    {len(verdicts)} of {len(pending)} mutants decided in reused test sessions")
+        # The wall-clock limit an isolated run of the mutant would get.
+        seconds_for = {
+            name: (sum(state().duration_by_test[test] for test in tests) + config().timeout_constant)
+            * config().timeout_multiplier
+            for name, tests in pending.items()
+        }
+        verdicts = run_in_reused_sessions(pending, config().session_batch_size, max_children, seconds_for)
+    seconds = round((datetime.now() - start).total_seconds())
+    print(f"    {len(verdicts)} of {len(pending)} mutants decided in reused test sessions in {seconds}s")
     return verdicts
 
 
