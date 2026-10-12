@@ -177,9 +177,12 @@ def store_lines_covered_by_tests(diff_base: str | None = None) -> str | None:
     return note
 
 
-def choose_tests(paths: ProjectPaths, previous: CoverageMap, diff_base: str) -> tuple[Selection | None, str]:
+def choose_tests(
+    paths: ProjectPaths, previous: CoverageMap, diff_base: str | None = None
+) -> tuple[Selection | None, str]:
     """The tests that can reach the files changed since the map was made or since ``diff_base``, or None to run them all."""
-    since_map, since_base = paths.changed_since(previous.commit), paths.changed_since(diff_base)
+    since_map = paths.changed_since(previous.commit)
+    since_base = paths.changed_since(diff_base) if diff_base else set()
     if since_map is None or since_base is None:
         return None, f"coverage map: commit {previous.commit[:12]} is unknown here, running every test"
     changed = since_map | since_base
@@ -1058,12 +1061,17 @@ def run_workspace(root: Path, diff_base: str, shard: tuple[int, int] | None, cpu
 @cli.command(name="coverage-map")
 @click.option("--max-children", type=int)
 @click.option("--workspace", is_flag=True, help="From a uv workspace root, map every member, side by side.")
-def coverage_map(*, max_children: int | None, workspace: bool) -> None:
-    """Run every test and record the files each one runs, for later diff runs to choose tests from."""
+@click.option("--full", is_flag=True, help="Run every test and replace the map, instead of updating it.")
+def coverage_map(*, max_children: int | None, workspace: bool, full: bool) -> None:
+    """Record the files each test runs, for later diff runs to choose tests from.
+
+    With a map already in place, reruns only the tests the changes since its commit can reach.
+    """
     if workspace:
         root = Path.cwd()
         cpu_count = max_children or os.cpu_count() or 4
-        sys.exit(report(run_members(root, workspace_members(root), [], cpu_count, command="coverage-map")))
+        arguments = ["--full"] if full else []
+        sys.exit(report(run_members(root, workspace_members(root), arguments, cpu_count, command="coverage-map")))
     paths = ProjectPaths.here()
     if paths is None or not config().coverage_map:
         raise click.UsageError("coverage-map needs a git checkout and `coverage_map = true`")
@@ -1071,13 +1079,15 @@ def coverage_map(*, max_children: int | None, workspace: bool) -> None:
     copy_src_dir()
     copy_also_copy_files()
     setup_source_paths()
-    info = gather_coverage(PytestRunner(), [], paths)
+    previous = None if full else CoverageMap.load()
+    selection, note = choose_tests(paths, previous) if previous else (None, "coverage map: running every test")
+    info = gather_coverage(PytestRunner(), [], paths, selection)
     if info.test_exit_code != 0:
         print(info.test_output)
         print(f"the tests fail (pytest exited {info.test_exit_code}), so there is no coverage map")
         sys.exit(1)
-    save_coverage_map(paths, CoverageMap.load(), info)
-    print(f"coverage map: {len(info.duration_by_test)} tests")
+    save_coverage_map(paths, previous, info)
+    print(f"{note}; {len(info.duration_by_test)} ran")
 
 
 def parse_shard(value: str | None) -> tuple[int, int] | None:

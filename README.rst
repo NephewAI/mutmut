@@ -271,6 +271,11 @@ a CI cache:
 
     mutmut coverage-map --workspace
 
+With a map already in place, this updates it: it reruns only the tests the changes since
+the map's commit can reach, the same way a diff run chooses them, and moves the map to
+the current commit. ``--full`` runs every test and replaces the map, which also drops
+tests that no longer exist; a nightly run with it keeps the map from drifting.
+
 A test can only be skipped if it ran none of the changed files. It can still be
 affected by them through state it never recorded, such as a cache or a database.
 Changes to files matching ``coverage_map_rerun_all`` run every test. The default is

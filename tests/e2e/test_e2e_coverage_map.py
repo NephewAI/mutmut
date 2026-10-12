@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -45,12 +46,13 @@ def committed_project(root: Path, coverage_map: bool) -> Path:
     return root
 
 
-def build_map(project: Path) -> None:
+def build_map(project: Path, *arguments: str) -> str:
     with change_cwd(project):
         mutmut._reset_globals()
-        result = CliRunner().invoke(cli, ["coverage-map"])
+        result = CliRunner().invoke(cli, ["coverage-map", *arguments])
     assert result.exit_code == 0, result.output
     forget_modules_from(project)
+    return result.output
 
 
 def diff_verdicts(project: Path, base: str = "HEAD") -> dict[str, int | None]:
@@ -121,3 +123,51 @@ def test_a_map_made_after_the_diff_base_still_runs_the_tests_of_everything_chang
 
     assert any(name.startswith("covlib.doubling") for name in verdicts)
     assert verdicts == diff_verdicts(plain, base="HEAD~1")
+
+
+def commit_all(project: Path, message: str) -> str:
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "add", "-A", "--", ":!mutants"], cwd=project, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", message], cwd=project, check=True)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=project, capture_output=True, text=True).stdout.strip()
+
+
+def test_an_update_reruns_only_the_tests_a_new_commit_can_reach_and_moves_the_map_to_it(tmp_path):
+    project = committed_project(tmp_path / "mapped", coverage_map=True)
+    build_map(project)
+    imported_mark = project / "mutants" / "tests" / "test_tripling.imported"
+    imported_mark.unlink()
+    (project / "src/covlib/doubling.py").write_text("def double(x):\n    return x + x\n")
+    head = commit_all(project, "double by adding")
+
+    output = build_map(project)
+
+    assert "coverage map: running 1 of 2 known tests, for 1 changed files; 1 ran" in output
+    assert not imported_mark.exists()
+    coverage_map = CoverageMap.load(project / "mutants" / "mutmut-coverage-map.json")
+    assert coverage_map is not None
+    assert coverage_map.commit == head
+    assert set(coverage_map.files_by_test) == {
+        "tests/test_doubling.py::test_double",
+        "tests/test_tripling.py::test_triple",
+    }
+
+
+def test_a_full_rebuild_runs_every_test_and_forgets_ones_that_are_gone(tmp_path):
+    project = committed_project(tmp_path / "mapped", coverage_map=True)
+    build_map(project)
+    (project / "tests" / "test_tripling.py").unlink()
+    commit_all(project, "drop the tripling test")
+    # Like CI: a fresh checkout with only the map restored, not the old mutants/ copy.
+    map_path = project / "mutants" / "mutmut-coverage-map.json"
+    saved = map_path.read_bytes()
+    shutil.rmtree(project / "mutants")
+    map_path.parent.mkdir()
+    map_path.write_bytes(saved)
+
+    output = build_map(project, "--full")
+
+    assert "coverage map: running every test; 1 ran" in output
+    coverage_map = CoverageMap.load(project / "mutants" / "mutmut-coverage-map.json")
+    assert coverage_map is not None
+    assert set(coverage_map.files_by_test) == {"tests/test_doubling.py::test_double"}
