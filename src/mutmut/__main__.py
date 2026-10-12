@@ -20,6 +20,7 @@ import ast
 import fnmatch
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import warnings
@@ -1278,7 +1279,72 @@ def _run(
         print(verdict.describe())
         for problem in verdict.unresolved:
             print(f"    not killed: {problem}")
+    print_survivors(verdicts)
     return verdicts
+
+
+# What each unresolved status asks of the person or agent fixing it.
+STATUS_HINTS = {
+    "survived": "these tests ran with this change and still passed; assert on what it changes",
+    "no tests": "no test runs this function; add one that does",
+    "not checked": "no test runs this function; add one that does",
+    "timeout": "the tests ran too long with this change; often a loop that no longer ends",
+    "suspicious": "the tests ran much slower with this change than without",
+    "segfault": "the test process crashed with this change",
+}
+# Diffs shown in full before the rest are listed by name only.
+MAX_SURVIVOR_DIFFS = 30
+
+
+def print_survivors(verdicts: list[FileVerdict]) -> None:
+    """Each mutant that wasn't killed, with the tests that ran against it and its diff."""
+    survivors = [(verdict.path, name, code) for verdict in verdicts for name, code in verdict.unresolved_codes()]
+    if not survivors:
+        return
+    print(f"\n{len(survivors)} mutants not killed. Each shows its diff and the tests that ran against it.")
+    for index, (path, name, code) in enumerate(survivors):
+        status = status_by_exit_code[code]
+        if index >= MAX_SURVIVOR_DIFFS:
+            print(f"\n=== {name} ({status}); see its diff with `mutmut show {name}`")
+            continue
+        print(f"\n=== {name} ({status}): {STATUS_HINTS.get(status, status)}")
+        key = mangled_name_from_mutant_name(name.replace("__init__.", ""))
+        tests = sorted(state().tests_by_mangled_function_name.get(key, ()))
+        more = f" and {len(tests) - 5} more" if len(tests) > 5 else ""
+        print(f"tests: {', '.join(tests[:5])}{more}" if tests else "tests: none")
+        try:
+            print(at_file_lines(get_diff_for_mutant(name), Path(path)))
+        except Exception as error:  # a report line must not fail the run it reports on
+            print(f"(no diff: {error!r})")
+
+
+HUNK = re.compile(r"^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@")
+
+
+def at_file_lines(diff: str, path: Path) -> str:
+    """A function's diff with hunk headers counting lines in its file, not in the function."""
+    lines = diff.split("\n")
+    first = next(((i, header) for i, line in enumerate(lines) if (header := HUNK.match(line))), None)
+    if first is None:
+        return diff
+    start, header = first
+    hunk = []
+    for line in lines[start + 1 :]:
+        if HUNK.match(line):
+            break
+        if line[:1] in (" ", "-"):
+            hunk.append(line[1:])
+    source = path.read_text().split("\n")
+    found = next((i for i in range(len(source)) if source[i : i + len(hunk)] == hunk), None)
+    if found is None:
+        return diff
+    offset = found - (int(header[1]) - 1)
+
+    def shift(match: re.Match[str]) -> str:
+        old, new = int(match[1]) + offset, int(match[3]) + offset
+        return f"@@ -{old}{match[2] or ''} +{new}{match[4] or ''} @@"
+
+    return "\n".join(HUNK.sub(shift, line) for line in lines)
 
 
 def decide_in_reused_sessions(

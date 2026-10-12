@@ -206,7 +206,9 @@ and with ``mutate_only_covered_lines`` only those the tests reach. Earlier resul
 the changed files are discarded, the clean and forced-fail checks use only the tests that
 cover the mutants, and when no changed line can be mutated at all, mutmut stops before
 running any tests. The command prints each changed file's result and exits with 1 unless
-every mutant there is killed or caught by the type checker.
+every mutant there is killed or caught by the type checker. For each mutant that wasn't,
+it prints what the status means, the tests that ran against it, and its diff at the file's
+own line numbers, so you or an agent can write the missing test straight away.
 
 To split that work across CI jobs, add ``--shard INDEX/COUNT`` (``--shard 0/4`` to
 ``--shard 3/4``). Each changed function goes to one shard, picked by a hash of its file

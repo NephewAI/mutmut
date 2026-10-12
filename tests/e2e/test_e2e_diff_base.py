@@ -94,7 +94,14 @@ def test_the_run_command_exits_non_zero_when_a_changed_line_has_surviving_mutant
 
     assert result.exit_code == 1
     # mutmut writes to the real stdout, past the click runner's capture.
-    assert "not killed: my_lib.x_badly_tested__mutmut_1 (survived)" in capfd.readouterr().out
+    out = capfd.readouterr().out
+    assert "not killed: my_lib.x_badly_tested__mutmut_1 (survived)" in out
+    report = out.split("=== my_lib.x_badly_tested__mutmut_1 (survived): ", 1)[1]
+    assert report.startswith("these tests ran with this change and still passed")
+    assert "tests: tests/test_my_lib.py::test_badly_tested" in report
+    assert '-    return "These should survive"' in report
+    assert '+    return "XXThese should surviveXX"' in report
+    assert "@@ -16,2 +16,2 @@" in report  # lines in the file, not in the function
 
 
 def test_shards_of_a_diff_run_split_its_mutants_without_overlap(tmp_path):

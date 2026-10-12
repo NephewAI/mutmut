@@ -114,8 +114,11 @@ class FileVerdict:
 
     @property
     def unresolved(self) -> list[str]:
+        return [f"{name} ({status_by_exit_code[code]})" for name, code in self.unresolved_codes()]
+
+    def unresolved_codes(self) -> list[tuple[str, int | None]]:
         return [
-            f"{name} ({status_by_exit_code[code]})"
+            (name, code)
             for name, code in sorted(self.exit_codes.items())
             if status_by_exit_code[code] not in RESOLVED_STATUSES
         ]
