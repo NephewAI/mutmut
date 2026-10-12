@@ -136,13 +136,24 @@ def opened_files(opened: Mapping[str, Iterable[str]], paths: ProjectPaths) -> di
 
 def files_by_context(data: CoverageData, paths: ProjectPaths) -> dict[str, frozenset[str]]:
     """The repository files each coverage context ran a line of."""
+    in_repo = cache(paths.in_repo)
     found: dict[str, set[str]] = defaultdict(set)
-    for measured in data.measured_files():
-        if (path := paths.in_repo(measured)) is None:
-            continue
-        for context in set().union(*data.contexts_by_lineno(measured).values()):
+    for measured, context in file_context_pairs(data):
+        if (path := in_repo(measured)) is not None:
             found[context].add(path)
     return {context: frozenset(files) for context, files in found.items()}
+
+
+def file_context_pairs(data: CoverageData) -> list[tuple[str, str]]:
+    """Each file and context with a recorded line, in one query: reading every file's lines is ten times slower."""
+    table = "arc" if data.has_arcs() else "line_bits"
+    query = f"""
+        SELECT DISTINCT file.path, context.context FROM {table}
+        JOIN file ON file.id = {table}.file_id JOIN context ON context.id = {table}.context_id
+    """
+    data.measured_files()  # loads the data before the private connection reads it
+    with data._connect() as connection, connection.execute(query) as rows:
+        return list(rows)
 
 
 def module_of(test: str) -> str:

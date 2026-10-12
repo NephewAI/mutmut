@@ -1,8 +1,11 @@
 import os
 import subprocess
 
+from coverage import CoverageData
+
 from mutmut.coverage_map import CoverageMap
 from mutmut.coverage_map import ProjectPaths
+from mutmut.coverage_map import files_by_context
 
 ROUTES = "src/app/routes.py"
 MODELS = "src/app/models.py"
@@ -126,3 +129,13 @@ def test_a_file_imported_through_a_mount_of_the_repository_reads_as_the_reposito
     assert paths.in_repo(str(mount / "packages" / "lib" / "src" / "lib.py")) == "runtime/packages/lib/src/lib.py"
     assert paths.mounts == {mount: repo / "runtime"}
     assert paths.in_repo(str(tmp_path / "elsewhere.py")) is None
+
+
+def test_each_context_gets_the_files_it_ran_a_line_of(tmp_path):
+    data = CoverageData(no_disk=True)
+    for context, files in {"t1": ["a.py", "b.py"], "t2": ["b.py"], "": ["c.py"]}.items():
+        data.set_context(context)
+        data.add_lines({str(tmp_path / name): {1, 2} for name in files})
+    paths = ProjectPaths(repo=tmp_path, project=tmp_path)
+
+    assert files_by_context(data, paths) == {"t1": {"a.py", "b.py"}, "t2": {"b.py"}, "": {"c.py"}}
