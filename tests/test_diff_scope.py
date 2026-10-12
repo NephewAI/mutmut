@@ -150,10 +150,14 @@ def test_a_function_stays_in_its_shard_when_another_file_joins_the_diff(tmp_path
     assert home(alone) == home(joined)
 
 
-def test_split_by_function_groups_lines_by_innermost_function():
-    source = "x = 1\n\ndef outer():\n    def inner():\n        return 1\n    return inner\n"
+def test_split_by_function_keeps_each_function_mutmut_mutates_whole():
+    source = (
+        "x = 1\n\ndef outer():\n    def inner():\n        return 1\n    return inner\n\n"
+        "class Box:\n    size = 2\n\n    def area(self):\n        return self.size\n"
+    )
 
-    assert split_by_function(source, [1, 4, 5, 6]) == [frozenset({1}), frozenset({6}), frozenset({4, 5})]
+    # Nested functions belong to their top-level function; class-level lines are module-level.
+    assert split_by_function(source, [1, 4, 5, 6, 9, 12]) == [frozenset({1, 9}), frozenset({4, 5, 6}), frozenset({12})]
 
 
 @pytest.mark.parametrize(("value", "shard"), [(None, None), ("0/4", (0, 4)), ("3/4", (3, 4))])

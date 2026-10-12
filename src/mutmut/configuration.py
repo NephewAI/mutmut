@@ -4,7 +4,6 @@ import fnmatch
 import hashlib
 import os
 import platform
-import sys
 import warnings
 from collections.abc import Callable
 from configparser import ConfigParser
@@ -16,6 +15,9 @@ from os.path import isdir
 from os.path import isfile
 from pathlib import Path
 from typing import Any
+
+from mutmut.workspace import load_toml
+from mutmut.workspace import workspace_members
 
 
 class ProcessIsolation(str, Enum):
@@ -58,21 +60,24 @@ class ForkServerWarmup(str, Enum):
     NONE = "none"
 
 
+def _workspace_defaults(project: Path) -> dict[str, Any]:
+    """The `[tool.mutmut]` of the uv workspace this project is a member of, if any."""
+    for root in project.parents:
+        pyproject = root / "pyproject.toml"
+        tool = load_toml(pyproject).get("tool", {}) if pyproject.is_file() else {}
+        if "workspace" in tool.get("uv", {}):
+            return dict(tool.get("mutmut", {})) if project.relative_to(root) in workspace_members(root) else {}
+    return {}
+
+
 def _config_reader() -> Callable[[str, Any], Any]:
     path = Path("pyproject.toml")
     if path.exists():
-        if sys.version_info >= (3, 11):
-            from tomllib import loads
-        else:
-            # noinspection PyPackageRequirements
-            from toml import loads
-        data = loads(path.read_text("utf-8"))
-
-        try:
-            config = data["tool"]["mutmut"]
-        except KeyError:
-            pass
-        else:
+        own = load_toml(path).get("tool", {}).get("mutmut")
+        defaults = _workspace_defaults(Path.cwd().resolve())
+        if own is not None or defaults:
+            # A workspace member takes the root's settings, overridden by its own.
+            config = {**defaults, **(own or {})}
 
             def toml_conf(key: str, default: Any) -> Any:
                 try:

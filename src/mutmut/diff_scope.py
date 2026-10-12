@@ -70,19 +70,18 @@ class DiffScope:
 
 
 def split_by_function(source: str, lines: Iterable[int]) -> list[frozenset[int]]:
-    """Group lines by their innermost function; module-level lines stay together."""
+    """Group lines by the function mutmut mutates them in: a top-level function or a method of a
+    top-level class, nested functions included. Module-level lines stay together."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return [frozenset(lines)]
-    spans = sorted(
-        (
-            (node.lineno, node.end_lineno or node.lineno)
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ),
-        key=lambda span: span[1] - span[0],
-    )
+    members = [member for node in tree.body for member in (node.body if isinstance(node, ast.ClassDef) else [node])]
+    spans = [
+        (member.lineno, member.end_lineno or member.lineno)
+        for member in members
+        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
     grouped: dict[tuple[int, int], set[int]] = {}
     for line in sorted(lines):
         span = next((span for span in spans if span[0] <= line <= span[1]), (0, 0))

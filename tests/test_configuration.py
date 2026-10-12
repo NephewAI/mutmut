@@ -395,3 +395,38 @@ timeout_constant = 0.5
         assert Path("poetry.lock") in config.also_copy
         assert Path("Pipfile.lock") in config.also_copy
         assert Path("pdm.lock") in config.also_copy
+
+
+class TestWorkspaceDefaults:
+    """A uv workspace member reads the root's [tool.mutmut], overridden by its own."""
+
+    def make_workspace(self, root):
+        (root / "pyproject.toml").write_text(
+            '[tool.uv.workspace]\nmembers = ["packages/*"]\n\n'
+            "[tool.mutmut]\nmutate_only_covered_lines = true\ntimeout_constant = 5.0\n"
+        )
+        for name, own in (("a", "[tool.mutmut]\ntimeout_constant = 9.0\n"), ("b", "")):
+            (root / "packages" / name / "src").mkdir(parents=True)
+            (root / "packages" / name / "pyproject.toml").write_text(own)
+        (root / "outside" / "src").mkdir(parents=True)
+        (root / "outside" / "pyproject.toml").write_text("[tool.mutmut]\n")
+
+    def settings_in(self, directory, monkeypatch):
+        monkeypatch.chdir(directory)
+        reset_config()
+        return config().mutate_only_covered_lines, config().timeout_constant
+
+    def test_a_members_own_settings_override_the_roots(self, tmp_path, monkeypatch):
+        self.make_workspace(tmp_path)
+
+        assert self.settings_in(tmp_path / "packages" / "a", monkeypatch) == (True, 9.0)
+
+    def test_a_member_without_settings_takes_the_roots(self, tmp_path, monkeypatch):
+        self.make_workspace(tmp_path)
+
+        assert self.settings_in(tmp_path / "packages" / "b", monkeypatch) == (True, 5.0)
+
+    def test_a_project_that_is_not_a_member_takes_nothing_from_the_root(self, tmp_path, monkeypatch):
+        self.make_workspace(tmp_path)
+
+        assert self.settings_in(tmp_path / "outside", monkeypatch) == (False, 1.0)

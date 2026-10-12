@@ -16,6 +16,7 @@ libraries.
 from __future__ import annotations
 
 import gc
+import io
 import logging
 import os
 import pickle
@@ -30,6 +31,8 @@ from abc import ABC
 from abc import abstractmethod
 from collections.abc import Callable
 from collections.abc import Iterable
+from contextlib import redirect_stderr
+from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime
 from queue import Empty
@@ -151,6 +154,24 @@ def run_in_fork(fn: Callable[..., int], *args: Any, **kwargs: Any) -> int:
     # Parent waits for child
     _, status = os.waitpid(pid, 0)
     return os.waitstatus_to_exitcode(status)
+
+
+def run_in_fork_with_output(fn: Callable[[], int]) -> int:
+    """Like run_in_fork, but print the child's output here, where an output catcher can see it."""
+
+    def captured() -> tuple[int, str]:
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output):
+            try:
+                exit_code = fn()
+            except Exception:
+                traceback.print_exc()
+                exit_code = 1
+        return exit_code, output.getvalue()
+
+    exit_code, output = run_in_fork_with_result(captured)
+    print(output, end="")
+    return int(exit_code)
 
 
 # Pipe messaging. Length-prefixed frames read with raw os.read() rather than a
@@ -922,12 +943,16 @@ class ForkRunner(MutantRunner):
         # Already in a clean process, so run stats directly without forking.
         return self.test_runner.run_stats(tests=tests or [])
 
+    # Mutants fork from this process, so tests run in a child: threads and event loops they leave behind hang later forks.
     def run_clean_tests(self, tests: Iterable[str]) -> int:
-        return self.test_runner.run_tests(mutant_name=None, tests=tests)
+        tests_list = list(tests)
+        return run_in_fork_with_output(lambda: self.test_runner.run_tests(mutant_name=None, tests=tests_list))
 
     def run_forced_fail(self, tests: Iterable[str] = ()) -> int:
         tests_list = list(tests)
-        return self.test_runner.run_forced_fail(tests_list) if tests_list else self.test_runner.run_forced_fail()
+        return run_in_fork_with_output(
+            lambda: self.test_runner.run_forced_fail(tests_list) if tests_list else self.test_runner.run_forced_fail()
+        )
 
     def list_all_tests(self) -> ListAllTestsResult:
         return self.test_runner.list_all_tests()

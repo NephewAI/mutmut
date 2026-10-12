@@ -12,13 +12,13 @@ Related: https://github.com/boxed/mutmut/pull/450#issuecomment-4002571055
 
 from mutmut.configuration import config
 
-if config().use_setproctitle:
-    from setproctitle import setproctitle as _setproctitle
 
-    def safe_setproctitle(title: str) -> None:
-        """Set the process title."""
-        _setproctitle(title)
-else:
+def safe_setproctitle(title: str) -> None:
+    """Set the process title, unless the config turns that off (the default on macOS).
 
-    def safe_setproctitle(title: str) -> None:
-        """No-op on macOS where setproctitle crashes after fork."""
+    Reads the config on call rather than import, so importing mutmut needs no project config.
+    """
+    if config().use_setproctitle:
+        from setproctitle import setproctitle
+
+        setproctitle(title)

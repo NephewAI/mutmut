@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import ast
+import io
 from collections.abc import Iterable
 from collections.abc import Sequence
+from contextlib import redirect_stderr
+from contextlib import redirect_stdout
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -24,6 +27,10 @@ if TYPE_CHECKING:
     from mutmut.runners.harness import TestRunner
 
 
+# Enough of a failed test run's report to show which tests failed and why.
+TEST_OUTPUT_LIMIT = 100_000
+
+
 @dataclass
 class CoverageInfo:
     """What coverage.py knows about the source files, keyed by absolute path in `mutants/`.
@@ -42,6 +49,7 @@ class CoverageInfo:
     tests_by_mangled_function_name: dict[str, set[str]] = field(default_factory=dict)
     duration_by_test: dict[str, float] = field(default_factory=dict)
     test_exit_code: int = 0
+    test_output: str = ""
 
 
 # Returns a set of lines that are covered in this file gvein the covered_lines dict
@@ -92,7 +100,10 @@ def _gather_coverage_in_this_process(runner: TestRunner, source_files: Iterable[
     cov = coverage.Coverage(data_file=None)
     contexts = PerTestContexts(cov) if config().stats_from_coverage else None
     if contexts:
-        exit_code = runner.collect_main_test_coverage(cov, plugins=[contexts])
+        # The child's output dies with it, so keep pytest's report in case the tests fail.
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output):
+            exit_code = runner.collect_main_test_coverage(cov, plugins=[contexts])
     else:
         exit_code = runner.collect_main_test_coverage(cov)
 
@@ -112,6 +123,8 @@ def _gather_coverage_in_this_process(runner: TestRunner, source_files: Iterable[
     if contexts:
         info.duration_by_test = contexts.duration_by_test
         info.test_exit_code = exit_code
+        if exit_code:
+            info.test_output = output.getvalue()[-TEST_OUTPUT_LIMIT:]
     return info
 
 

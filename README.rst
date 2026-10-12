@@ -212,6 +212,23 @@ To split that work across CI jobs, add ``--shard INDEX/COUNT`` (``--shard 0/4`` 
 ``--shard 3/4``). Each changed function goes to one shard, picked by a hash of its file
 and changed lines, so a change elsewhere in the diff never moves it.
 
+In a uv workspace, one call covers every member: run it from the workspace root with
+``--workspace``.
+
+.. code-block::
+
+    mutmut run --workspace --diff-base origin/main --shard 0/4
+
+This reads ``[tool.uv.workspace]``, and for each member with Python changes since the
+ref runs ``mutmut run --diff-base`` in that member's directory, with that member's own
+``[tool.mutmut]`` config. Members run side by side, each with its own temp directory
+and a share of ``--max-children``. It prints each member's output and exits with 1 if
+any member failed.
+
+Settings shared by every member can live in the workspace root's ``[tool.mutmut]``: a
+member reads them as defaults, and its own ``[tool.mutmut]`` overrides them key by key.
+Paths in the root's settings are used as written, relative to each member.
+
 
 Test many mutants in one pytest session
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

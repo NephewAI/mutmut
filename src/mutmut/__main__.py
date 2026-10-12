@@ -83,6 +83,9 @@ from mutmut.workers.isolation import MutantResult
 from mutmut.workers.isolation import MutantRunner
 from mutmut.workers.isolation import get_mutant_runner
 from mutmut.workers.session import run_in_reused_sessions
+from mutmut.workspace import changed_members
+from mutmut.workspace import report
+from mutmut.workspace import run_members
 
 # Document: surviving mutants are retested when you ask mutmut to retest them, interactively in the UI or via command line
 
@@ -367,6 +370,16 @@ def run_stats_collection(runner: MutantRunner, tests: Iterable[str] | None = Non
         exit(1)
 
     save_stats()
+
+
+def stop_if_the_tests_fail(catcher: CatchOutput) -> None:
+    """With stats from coverage, a failing test run ends the run before any mutant is made, with pytest's report."""
+    info = state()._coverage_stats
+    if info is not None and info.test_exit_code != 0:
+        catcher.stop()
+        print(info.test_output)
+        print(f"failed to collect stats: the tests fail without any mutant (pytest exited {info.test_exit_code})")
+        exit(1)
 
 
 def use_coverage_stats(info: CoverageInfo) -> None:
@@ -972,6 +985,11 @@ elif "mutmut.__main__" not in sys.modules:
     callback=lambda ctx, param, value: parse_shard(value),
     help="INDEX/COUNT: with --diff-base, take only this shard of the changed functions.",
 )
+@click.option(
+    "--workspace",
+    is_flag=True,
+    help="From a uv workspace root, run each member with changes since --diff-base, side by side.",
+)
 @click.argument("mutant_names", required=False, nargs=-1)
 def run(
     mutant_names: tuple[str, ...] | list[str],
@@ -979,13 +997,28 @@ def run(
     max_children: int | None,
     diff_base: str | None,
     shard: tuple[int, int] | None,
+    workspace: bool,
 ) -> None:
     assert isinstance(mutant_names, (tuple, list)), mutant_names
     if shard is not None and diff_base is None:
         raise click.UsageError("--shard needs --diff-base")
+    if workspace:
+        if diff_base is None:
+            raise click.UsageError("--workspace needs --diff-base")
+        sys.exit(run_workspace(Path.cwd(), diff_base, shard, max_children or os.cpu_count() or 4))
     verdicts = _run(mutant_names, max_children, diff_base=diff_base, shard=shard)
     if verdicts is not None and any(verdict.unresolved for verdict in verdicts):
         sys.exit(1)
+
+
+def run_workspace(root: Path, diff_base: str, shard: tuple[int, int] | None, cpu_count: int) -> int:
+    """Run the changed members' diff runs side by side; returns the combined exit code."""
+    members = changed_members(root, diff_base)
+    if not members:
+        print("No workspace member has Python changes since", diff_base)
+        return 0
+    arguments = ["--diff-base", diff_base, *(["--shard", f"{shard[0]}/{shard[1]}"] if shard else [])]
+    return report(run_members(root, members, arguments, cpu_count))
 
 
 def parse_shard(value: str | None) -> tuple[int, int] | None:
@@ -1028,13 +1061,14 @@ def _run(
 
     start = datetime.now()
     makedirs(Path("mutants"), exist_ok=True)
-    with CatchOutput(spinner_title="Generating mutants"):
+    with CatchOutput(spinner_title="Generating mutants") as catcher:
         if scope is not None:
             scope.forget_previous_mutants()
         copy_src_dir()
         copy_also_copy_files()
         setup_source_paths()
         store_lines_covered_by_tests()
+        stop_if_the_tests_fail(catcher)
         measured_lines = state()._covered_lines
         if scope is not None:
             state()._covered_lines = scope.line_filter(measured_lines)

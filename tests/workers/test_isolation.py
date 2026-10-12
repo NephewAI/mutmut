@@ -399,6 +399,7 @@ class _RecordingTestRunner:
 
     def run_tests(self, *, mutant_name, tests):
         self._record()
+        print("output from the test run")
         return 0
 
     def run_forced_fail(self):
@@ -462,3 +463,49 @@ class TestForkServerRunnerNeverRunsTestsInTheMainProcess:
         runner = self._runner()
         assert runner.test_runner_class is _RecordingTestRunner
         assert not any(isinstance(value, _RecordingTestRunner) for value in vars(runner).values())
+
+
+class _FailingForcedFailRunner(_RecordingTestRunner):
+    def run_forced_fail(self):
+        self._record()
+        raise RuntimeError("forced failure")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Forking not supported on Windows")
+class TestForkRunnerKeepsTheMainProcessClean:
+    """Mutants and session batches fork from the main process, so tests must not have run there.
+
+    Threads and event loops a test leaves behind hang the children forked after it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def runner(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_RecordingTestRunner, "pid_file", str(tmp_path / "ran_in_pid"))
+        self.pid_file = tmp_path / "ran_in_pid"
+        yield
+        sys.modules.pop(_RecordingTestRunner.MARKER_MODULE, None)
+
+    def _assert_ran_in_a_child(self):
+        assert self.pid_file.exists(), "the operation never ran"
+        assert self.pid_file.read_text() != str(os.getpid()), "the operation ran in the main process"
+        assert _RecordingTestRunner.MARKER_MODULE not in sys.modules
+
+    def test_run_clean_tests_runs_in_a_child(self):
+        runner = ForkRunner(max_workers=1, test_runner=_RecordingTestRunner(), debug=False)
+        assert runner.run_clean_tests(tests=["test_a"]) == 0
+        self._assert_ran_in_a_child()
+
+    def test_run_clean_tests_passes_the_child_output_on(self, capsys):
+        ForkRunner(max_workers=1, test_runner=_RecordingTestRunner(), debug=False).run_clean_tests(tests=["test_a"])
+        assert "output from the test run" in capsys.readouterr().out
+
+    def test_run_forced_fail_runs_in_a_child(self):
+        runner = ForkRunner(max_workers=1, test_runner=_RecordingTestRunner(), debug=False)
+        assert runner.run_forced_fail() == 1
+        self._assert_ran_in_a_child()
+
+    def test_an_exception_in_the_forced_fail_run_is_a_failure_with_its_traceback(self, capsys):
+        runner = ForkRunner(max_workers=1, test_runner=_FailingForcedFailRunner(), debug=False)
+        assert runner.run_forced_fail() == 1
+        assert "RuntimeError: forced failure" in capsys.readouterr().out
+        self._assert_ran_in_a_child()
