@@ -221,6 +221,7 @@ def _load_config() -> Config:
         session_batch_size=s("session_batch_size", 0),
         coverage_map=s("coverage_map", False),
         coverage_map_rerun_all=s("coverage_map_rerun_all", list(COVERAGE_MAP_RERUN_ALL)),
+        coverage_map_content_aware=s("coverage_map_content_aware", True),
         source_paths=source_paths,
         resolved_mutated_source_paths=resolved_mutated_source_paths,
         pytest_add_cli_args=s("pytest_add_cli_args", []),
@@ -286,6 +287,8 @@ class Config:
     coverage_map: bool = False
     # Repository paths whose change makes a diff run run every test anyway.
     coverage_map_rerun_all: list[str] = field(default_factory=lambda: list(COVERAGE_MAP_RERUN_ALL))
+    # Judge pyproject.toml and uv.lock changes by their contents when only the default patterns match them.
+    coverage_map_content_aware: bool = True
 
     def config_fingerprint(self) -> dict[str, str]:
         """Hash the config fields that can change cached mutant *results*, grouped so the

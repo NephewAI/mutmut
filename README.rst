@@ -279,10 +279,25 @@ tests that no longer exist; a nightly run with it keeps the map from drifting.
 A test can only be skipped if it ran none of the changed files. It can still be
 affected by them through state it never recorded, such as a cache or a database.
 Changes to files matching ``coverage_map_rerun_all`` run every test. The default is
-conftest files, lock files and other test configuration. A ``pyproject.toml`` counts
-only if a table that can change the tests changed, and adding a test to
-``pytest_add_cli_args_test_selection`` doesn't count. Every run adds what its tests
+conftest files, lock files and other test configuration. Every run adds what its tests
 ran to the map.
+
+A changed ``pyproject.toml`` and ``uv.lock`` are judged by their contents instead of
+running every test, when only the default patterns ``*pyproject.toml`` and ``*.lock``
+match them. A ``pyproject.toml`` runs every test only if its ``[tool.pytest]``,
+``[tool.coverage]`` or ``[tool.mutmut]`` table differs from the one at the map's commit
+(and at the ``--diff-base``); adding a test to ``pytest_add_cli_args_test_selection``
+doesn't count. Its dependency lists count only when no ``uv.lock`` sits above it. A
+``uv.lock`` runs every test only if a distribution that changed, or that joined or left
+the project's environment, is used by the project: the closure of its
+``[project].name``, its extras and groups, and the workspace root's dependency groups.
+The reason names the distributions, such as
+``uv.lock changed looptime used by nephew-orchestration``. Anything mutmut can't judge
+runs every test: old contents it can't read, TOML that doesn't parse, a lock format other
+than version 1, or a ``uv.lock`` that isn't in the project's directory or above it.
+Other lock files, such as ``poetry.lock``, and any pattern you add that matches these two
+files, still run every test. ``coverage_map_content_aware = false`` makes every match run
+every test.
 
 
 Filter generated mutants with type checker

@@ -61,6 +61,14 @@ class TestProcessIsolationConfig:
         assert cfg.max_forkserver_restarts == 3
         assert cfg.preload_modules_file is None
 
+    def test_coverage_map_content_awareness_defaults_on(self, in_tmp_dir: Path):
+        self._write_pyproject(in_tmp_dir, "")
+        assert config().coverage_map_content_aware is True
+
+    def test_coverage_map_content_awareness_can_be_switched_off(self, in_tmp_dir: Path):
+        self._write_pyproject(in_tmp_dir, "coverage_map_content_aware = false")
+        assert config().coverage_map_content_aware is False
+
     def test_forkserver_selected(self, in_tmp_dir: Path):
         self._write_pyproject(in_tmp_dir, 'process_isolation = "forkserver"')
         assert config().process_isolation == ProcessIsolation.FORKSERVER

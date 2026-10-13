@@ -99,21 +99,19 @@ def test_only_the_project_s_mutants_copy_is_left_out_of_the_changes(tmp_path):
     assert paths.changed_since("not-a-commit") is None
 
 
-def test_a_pyproject_change_counts_only_when_it_can_change_what_tests_do(tmp_path):
-    allowlist = '[tool.mutmut]\npytest_add_cli_args_test_selection = ["tests/test_a.py"]\n'
-    for name in ("listed", "linted", "tested"):
-        (tmp_path / name).mkdir()
-        (tmp_path / name / "pyproject.toml").write_text(allowlist)
+def test_a_changed_pyproject_is_listed_with_the_other_changes_and_its_old_contents_read_from_git(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.x]\na = 1\n")
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
     for args in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "base"]):
         subprocess.run([*git, *args], cwd=tmp_path, check=True)
-    (tmp_path / "listed" / "pyproject.toml").write_text(allowlist.replace('"]', '", "tests/test_b.py"]'))
-    (tmp_path / "linted" / "pyproject.toml").write_text(allowlist + "[tool.vulture]\nignore_names = ['x']\n")
-    (tmp_path / "tested" / "pyproject.toml").write_text(allowlist + "[tool.pytest.ini_options]\naddopts = '-p x'\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.x]\na = 2\n")
 
     paths = ProjectPaths(repo=tmp_path.resolve(), project=tmp_path.resolve())
 
-    assert paths.changed_since("HEAD") == {"tested/pyproject.toml"}
+    assert paths.changed_since("HEAD") == {"pyproject.toml"}
+    assert paths.file_at("HEAD", "pyproject.toml") == "[tool.x]\na = 1\n"
+    assert paths.file_at("HEAD", "missing.toml") is None
+    assert paths.file_at("not-a-commit", "pyproject.toml") is None
 
 
 def test_a_file_imported_through_a_mount_of_the_repository_reads_as_the_repository_s(tmp_path):

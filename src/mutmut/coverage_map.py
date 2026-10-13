@@ -5,8 +5,10 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
 import subprocess
 from collections import defaultdict
+from collections.abc import Collection
 from collections.abc import Iterable
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -14,7 +16,6 @@ from dataclasses import field
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
-from typing import Any
 
 from mutmut.utils.format_utils import strip_prefix
 from mutmut.workspace import parse_toml
@@ -84,45 +85,25 @@ class ProjectPaths:
         return head.strip() if head else None
 
     def changed_since(self, commit: str) -> set[str] | None:
-        """Repository paths changed since ``commit``, committed or not; None if git can't tell.
-
-        A pyproject.toml counts only if its test settings changed.
-        """
+        """Repository paths changed since ``commit``, committed or not; None if git can't tell."""
         diff = git(self.repo, "diff", "--name-only", "--no-renames", commit, "--")
         untracked = git(self.repo, "ls-files", "--others", "--exclude-standard")
         if diff is None or untracked is None:
             return None
         mutants = str((self.project / "mutants").relative_to(self.repo)) + "/"
-        return {
-            line
-            for line in (diff + untracked).splitlines()
-            if line
-            and not line.startswith(mutants)
-            and (Path(line).name != "pyproject.toml" or self.test_settings_changed(commit, line))
-        }
+        return {line for line in (diff + untracked).splitlines() if line and not line.startswith(mutants)}
 
-    def test_settings_changed(self, commit: str, path: str) -> bool:
-        before, after = git(self.repo, "show", f"{commit}:{path}"), self.repo / path
-        if before is None or not after.is_file():
-            return True
+    def file_at(self, commit: str, path: str) -> str | None:
+        """A repository file's contents at ``commit``, or None if it wasn't there or git can't tell."""
+        return git(self.repo, "show", f"{commit}:{path}")
+
+    def project_name(self) -> str | None:
+        """The normalized ``[project].name`` of the project's pyproject.toml, if it has one."""
         try:
-            return test_settings(parse_toml(before)) != test_settings(parse_toml(after.read_text()))
-        except ValueError:  # unparseable: assume the worst
-            return True
-
-
-# Tool tables that only configure linters and type checkers, which never run inside a test.
-STATIC_TOOLS = frozenset(
-    {"ruff", "mypy", "pyrefly", "pyright", "vulture", "tach", "importlinter", "black", "isort", "pylint", "codespell"}
-)
-
-
-def test_settings(pyproject: dict[str, Any]) -> dict[str, Any]:
-    """A pyproject.toml without what can't change a test: static tool settings, and mutmut's list of tests."""
-    tool = {name: table for name, table in pyproject.get("tool", {}).items() if name not in STATIC_TOOLS}
-    if "mutmut" in tool:
-        tool["mutmut"] = {k: v for k, v in tool["mutmut"].items() if k != "pytest_add_cli_args_test_selection"}
-    return {**pyproject, "tool": tool}
+            name = parse_toml((self.project / "pyproject.toml").read_text("utf-8")).get("project", {}).get("name")
+        except (OSError, ValueError):
+            return None
+        return re.sub(r"[-_.]+", "-", name).lower() if isinstance(name, str) else None
 
 
 def opened_files(opened: Mapping[str, Iterable[str]], paths: ProjectPaths) -> dict[str, frozenset[str]]:
@@ -241,11 +222,16 @@ class CoverageMap:
             union(self.files_by_module, newer.files_by_module),
         )
 
-    def select(self, changed: Iterable[str], rerun_all_patterns: Iterable[str]) -> Selection | str:
-        """The tests that ran a changed file at this map's commit, or why every test has to run."""
+    def select(
+        self, changed: Iterable[str], rerun_all_patterns: Iterable[str], settled: Collection[str] = ()
+    ) -> Selection | str:
+        """The tests that ran a changed file at this map's commit, or why every test has to run.
+
+        Changes in ``settled`` are already judged, so the rerun-all patterns skip them.
+        """
         changed = set(changed)
         for pattern in rerun_all_patterns:
-            if hits := fnmatch.filter(changed, pattern):
+            if hits := fnmatch.filter(changed - set(settled), pattern):
                 return f"{hits[0]} changed"
         tests = frozenset(
             test

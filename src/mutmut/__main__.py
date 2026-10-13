@@ -51,6 +51,7 @@ from mutmut.code_coverage import get_excluded_lines_for_file
 from mutmut.configuration import Config
 from mutmut.configuration import config
 from mutmut.core import MutmutProgrammaticFailException
+from mutmut.coverage_invalidation import content_aware_reason
 from mutmut.coverage_map import CoverageMap
 from mutmut.coverage_map import ProjectPaths
 from mutmut.coverage_map import Selection
@@ -186,7 +187,14 @@ def choose_tests(
     if since_map is None or since_base is None:
         return None, f"coverage map: commit {previous.commit[:12]} is unknown here, running every test"
     changed = since_map | since_base
-    choice = previous.select(changed, config().coverage_map_rerun_all)
+    patterns, settled = config().coverage_map_rerun_all, set()
+    if config().coverage_map_content_aware:
+        for commit, changes in ((previous.commit, since_map), (diff_base, since_base)):
+            reason, judged = content_aware_reason(paths, commit, changes, patterns) if commit else (None, set())
+            if reason:
+                return None, f"coverage map: {reason}, running every test"
+            settled |= judged
+    choice = previous.select(changed, patterns, settled)
     if isinstance(choice, str):
         return None, f"coverage map: {choice}, running every test"
     known = len(choice.known_tests)
